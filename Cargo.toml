@@ -3,6 +3,7 @@ members = [
     "crates/asceswap-types",
     "crates/asceswap-math",
     "crates/asceswap-orderbook",
+    "crates/asceswap-matcher",
 ]
 resolver = "2"
 
