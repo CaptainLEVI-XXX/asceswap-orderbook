@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/asceswap-types",
+    "crates/asceswap-math",
 ]
 resolver = "2"
 
@@ -12,4 +13,5 @@ rust-version = "1.76"
 
 [workspace.dependencies]
 alloy-primitives = "0.8"
+asceswap-math = { path = "crates/asceswap-math" }
 asceswap-types = { path = "crates/asceswap-types" }
