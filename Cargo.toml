@@ -1,5 +1,7 @@
 [workspace]
-members = []
+members = [
+    "crates/asceswap-types",
+]
 resolver = "2"
 
 [workspace.package]
@@ -10,3 +12,4 @@ rust-version = "1.76"
 
 [workspace.dependencies]
 alloy-primitives = "0.8"
+asceswap-types = { path = "crates/asceswap-types" }
