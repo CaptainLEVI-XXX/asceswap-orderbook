@@ -248,6 +248,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "asceswap-orderbook"
+version = "0.1.0"
+dependencies = [
+ "asceswap-math",
+ "asceswap-types",
+]
+
+[[package]]
 name = "asceswap-types"
 version = "0.1.0"
 dependencies = [
