@@ -5,6 +5,7 @@ members = [
     "crates/asceswap-orderbook",
     "crates/asceswap-matcher",
     "crates/asceswap-validation",
+    "crates/asceswap-state",
 ]
 resolver = "2"
 
@@ -19,5 +20,6 @@ alloy-primitives = "0.8"
 asceswap-math = { path = "crates/asceswap-math" }
 asceswap-matcher = { path = "crates/asceswap-matcher" }
 asceswap-orderbook = { path = "crates/asceswap-orderbook" }
+asceswap-state = { path = "crates/asceswap-state" }
 asceswap-types = { path = "crates/asceswap-types" }
 asceswap-validation = { path = "crates/asceswap-validation" }

@@ -265,6 +265,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "asceswap-state"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "asceswap-matcher",
+ "asceswap-types",
+]
+
+[[package]]
 name = "asceswap-types"
 version = "0.1.0"
 dependencies = [
