@@ -4,6 +4,7 @@ members = [
     "crates/asceswap-math",
     "crates/asceswap-orderbook",
     "crates/asceswap-matcher",
+    "crates/asceswap-validation",
 ]
 resolver = "2"
 
@@ -16,5 +17,7 @@ rust-version = "1.76"
 [workspace.dependencies]
 alloy-primitives = "0.8"
 asceswap-math = { path = "crates/asceswap-math" }
+asceswap-matcher = { path = "crates/asceswap-matcher" }
 asceswap-orderbook = { path = "crates/asceswap-orderbook" }
 asceswap-types = { path = "crates/asceswap-types" }
+asceswap-validation = { path = "crates/asceswap-validation" }
