@@ -8,6 +8,7 @@ members = [
     "crates/asceswap-state",
     "crates/asceswap-engine",
     "crates/asceswap-storage",
+    "crates/asceswap-api",
 ]
 resolver = "2"
 
@@ -19,6 +20,7 @@ rust-version = "1.76"
 
 [workspace.dependencies]
 alloy-primitives = "0.8"
+asceswap-api = { path = "crates/asceswap-api" }
 asceswap-engine = { path = "crates/asceswap-engine" }
 asceswap-math = { path = "crates/asceswap-math" }
 asceswap-matcher = { path = "crates/asceswap-matcher" }
@@ -27,3 +29,5 @@ asceswap-state = { path = "crates/asceswap-state" }
 asceswap-storage = { path = "crates/asceswap-storage" }
 asceswap-types = { path = "crates/asceswap-types" }
 asceswap-validation = { path = "crates/asceswap-validation" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

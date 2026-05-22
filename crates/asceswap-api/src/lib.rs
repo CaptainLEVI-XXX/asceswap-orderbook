@@ -1,0 +1,22 @@
+mod error;
+mod event;
+mod request;
+mod response;
+mod service;
+mod wire;
+
+pub use error::ApiError;
+pub use event::{ApiEvent, ApiEventKind};
+pub use request::{
+    CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
+    SubmitOrderRequest, ValidationContextRequest,
+};
+pub use response::{
+    CancelOrderResponse, DepthLevelResponse, MarketDepthResponse, OrderStatusResponse,
+    ReservationActionResponse, SubmitOrderResponse, SubmitOrderResponseOutcome,
+};
+pub use service::OrderbookApiService;
+pub use wire::{ApiClaimSide, ApiMatchKind, ApiOrder, ApiOrderState, ApiSide, ApiSignatureCheck};
+
+#[cfg(test)]
+mod tests;

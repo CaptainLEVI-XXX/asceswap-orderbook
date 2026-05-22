@@ -1,0 +1,19 @@
+[package]
+name = "asceswap-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+asceswap-engine.workspace = true
+asceswap-math.workspace = true
+asceswap-matcher.workspace = true
+asceswap-state.workspace = true
+asceswap-storage.workspace = true
+asceswap-types.workspace = true
+asceswap-validation.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

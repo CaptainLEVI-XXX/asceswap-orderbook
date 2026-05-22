@@ -241,6 +241,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "asceswap-api"
+version = "0.1.0"
+dependencies = [
+ "asceswap-engine",
+ "asceswap-matcher",
+ "asceswap-math",
+ "asceswap-state",
+ "asceswap-storage",
+ "asceswap-types",
+ "asceswap-validation",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "asceswap-engine"
 version = "0.1.0"
 dependencies = [
