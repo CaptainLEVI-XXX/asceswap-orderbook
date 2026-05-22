@@ -72,6 +72,39 @@ impl ReservationBook {
         Self::default()
     }
 
+    pub fn from_reservations(reservations: Vec<Reservation>) -> Result<Self, StateError> {
+        let mut book = Self::new();
+        for reservation in reservations {
+            if let Some(expires_at) = reservation.expires_at {
+                if expires_at <= reservation.created_at {
+                    return Err(StateError::InvalidReservationExpiry {
+                        created_at: reservation.created_at,
+                        expires_at,
+                    });
+                }
+            }
+
+            if book.reservations.contains_key(&reservation.id) {
+                return Err(StateError::DuplicateReservation(reservation.id));
+            }
+
+            if matches!(
+                reservation.status,
+                ReservationStatus::Reserved | ReservationStatus::Submitted
+            ) {
+                book.add_reserved(&reservation.legs)?;
+            }
+
+            book.reservations.insert(reservation.id, reservation);
+        }
+
+        Ok(book)
+    }
+
+    pub fn reservations(&self) -> impl Iterator<Item = &Reservation> {
+        self.reservations.values()
+    }
+
     pub fn reserved_claim_amount(&self, order_hash: OrderHash) -> U256 {
         self.reserved_by_order
             .get(&order_hash)

@@ -1,3 +1,4 @@
+use asceswap_matcher::MatchConfig;
 use asceswap_state::{OrderState, ReservationStatus};
 use asceswap_types::{Address, ClaimSide, Order, OrderError, Side, B256, U256};
 use asceswap_validation::{order_hash, OrderValidationContext, SignatureCheck, ValidationError};
@@ -220,6 +221,90 @@ fn reservation_expiry_restores_maker_and_inactivates_non_resting_taker() {
         .market_book(market_id())
         .unwrap()
         .contains(maker_hash));
+}
+
+#[test]
+fn snapshot_recovery_preserves_books_records_and_reservations() {
+    let mut engine = AsceSwapEngine::default();
+    let maker_order = rest_maker(&mut engine);
+    let taker_order = buy_order(2, 2, 100, 50);
+    let maker_hash = order_hash(&maker_order);
+    let taker_hash = order_hash(&taker_order);
+    let result = engine
+        .submit_order(submit(taker_order, 100).with_reservation_ttl_secs(Some(10)))
+        .unwrap();
+    let reservation_id = match result.outcome {
+        SubmitOrderOutcome::Matched { reservation_id, .. } => reservation_id,
+        other => panic!("expected match, got {other:?}"),
+    };
+
+    let snapshot = engine.snapshot();
+    let mut recovered = AsceSwapEngine::from_snapshot(MatchConfig::default(), snapshot).unwrap();
+
+    assert_eq!(
+        recovered.order_record(maker_hash).unwrap().state(),
+        OrderState::Reserved
+    );
+    assert_eq!(
+        recovered.order_record(taker_hash).unwrap().state(),
+        OrderState::Reserved
+    );
+    assert_eq!(
+        recovered.reservation(reservation_id).unwrap().status,
+        ReservationStatus::Reserved
+    );
+
+    recovered.expire_reservation(reservation_id, 110).unwrap();
+    assert_eq!(
+        recovered.order_record(maker_hash).unwrap().state(),
+        OrderState::Open
+    );
+    assert_eq!(
+        recovered.order_record(taker_hash).unwrap().state(),
+        OrderState::Inactive
+    );
+}
+
+#[test]
+fn snapshot_recovery_rejects_order_hash_mismatch() {
+    let mut engine = AsceSwapEngine::default();
+    let order = rest_maker(&mut engine);
+    let actual_hash = order_hash(&order);
+    let mut snapshot = engine.snapshot();
+    let wrong_hash = B256::repeat_byte(99);
+    snapshot.orders[0].hash = wrong_hash;
+
+    assert_eq!(
+        AsceSwapEngine::from_snapshot(MatchConfig::default(), snapshot).unwrap_err(),
+        EngineError::SnapshotOrderHashMismatch {
+            expected: wrong_hash,
+            actual: actual_hash,
+        }
+    );
+}
+
+#[test]
+fn snapshot_recovery_rejects_over_reserved_orders() {
+    let mut engine = AsceSwapEngine::default();
+    rest_maker(&mut engine);
+    let taker_order = buy_order(2, 2, 100, 50);
+    let result = engine
+        .submit_order(submit(taker_order, 100).with_reservation_ttl_secs(Some(10)))
+        .unwrap();
+    assert!(matches!(result.outcome, SubmitOrderOutcome::Matched { .. }));
+
+    let mut snapshot = engine.snapshot();
+    let order_hash = snapshot.reservations[0].legs[0].order_hash;
+    snapshot.reservations[0].legs[0].claim_amount = U256::from(101);
+
+    assert_eq!(
+        AsceSwapEngine::from_snapshot(MatchConfig::default(), snapshot).unwrap_err(),
+        EngineError::ReservedAmountExceedsAvailable {
+            order_hash,
+            reserved: U256::from(101),
+            available: U256::from(100),
+        }
+    );
 }
 
 #[test]

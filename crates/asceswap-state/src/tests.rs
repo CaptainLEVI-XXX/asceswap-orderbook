@@ -112,6 +112,50 @@ fn creates_reservation_legs_and_tracks_reserved_amounts() {
 }
 
 #[test]
+fn rebuilds_reservation_book_from_active_reservations() {
+    let mut book = ReservationBook::new();
+    let reservation_id = B256::repeat_byte(9);
+    let reservation = book
+        .create(reservation_id, hash(1), &plan(), &availability())
+        .unwrap()
+        .clone();
+
+    let rebuilt = ReservationBook::from_reservations(vec![reservation]).unwrap();
+
+    assert_eq!(rebuilt.reserved_claim_amount(hash(1)), U256::from(100));
+    assert_eq!(rebuilt.reserved_claim_amount(hash(2)), U256::from(100));
+    assert_eq!(
+        rebuilt.get(reservation_id).unwrap().status,
+        ReservationStatus::Reserved
+    );
+}
+
+#[test]
+fn rejects_invalid_expiry_when_rebuilding_reservation_book() {
+    let mut book = ReservationBook::new();
+    let mut reservation = book
+        .create_with_expiration(
+            B256::repeat_byte(9),
+            hash(1),
+            &plan(),
+            &availability(),
+            100,
+            Some(110),
+        )
+        .unwrap()
+        .clone();
+    reservation.expires_at = Some(100);
+
+    assert_eq!(
+        ReservationBook::from_reservations(vec![reservation]).unwrap_err(),
+        StateError::InvalidReservationExpiry {
+            created_at: 100,
+            expires_at: 100,
+        }
+    );
+}
+
+#[test]
 fn derives_stable_reservation_ids_from_plan_content() {
     let plan = plan();
     let first = derive_reservation_id(hash(1), &plan, 42);

@@ -14,6 +14,7 @@ use crate::{
     CancelOrder, CancelOrderResult, EngineError, EngineEvent, OrderRecord, ReservationUpdateResult,
     SubmitOrder, SubmitOrderOutcome, SubmitOrderResult,
 };
+use crate::{EngineSnapshot, OrderSnapshot};
 
 #[derive(Clone, Debug)]
 pub struct AsceSwapEngine {
@@ -51,6 +52,100 @@ impl AsceSwapEngine {
 
     pub fn reservation(&self, reservation_id: ReservationId) -> Option<&Reservation> {
         self.reservations.get(reservation_id)
+    }
+
+    pub fn snapshot(&self) -> EngineSnapshot {
+        let mut orders = self
+            .records
+            .values()
+            .map(|record| OrderSnapshot {
+                hash: record.hash,
+                order: record.order.clone(),
+                state: record.state(),
+                filled_claim_amount: record.filled_claim_amount,
+                resting: record.resting,
+            })
+            .collect::<Vec<_>>();
+        orders.sort_by(|left, right| left.hash.as_slice().cmp(right.hash.as_slice()));
+
+        let mut reservations = self
+            .reservations
+            .reservations()
+            .cloned()
+            .collect::<Vec<_>>();
+        reservations.sort_by(|left, right| left.id.as_slice().cmp(right.id.as_slice()));
+
+        EngineSnapshot {
+            orders,
+            reservations,
+            next_reservation_sequence: self.next_reservation_sequence,
+        }
+    }
+
+    pub fn from_snapshot(
+        match_config: MatchConfig,
+        snapshot: EngineSnapshot,
+    ) -> Result<Self, EngineError> {
+        let mut books = HashMap::new();
+        let mut records = HashMap::new();
+
+        for order in snapshot.orders {
+            let actual_hash = order_hash(&order.order);
+            if actual_hash != order.hash {
+                return Err(EngineError::SnapshotOrderHashMismatch {
+                    expected: order.hash,
+                    actual: actual_hash,
+                });
+            }
+
+            if records.contains_key(&order.hash) {
+                return Err(EngineError::DuplicateOrder(order.hash));
+            }
+
+            if order.resting {
+                if !matches!(
+                    order.state,
+                    OrderState::Open
+                        | OrderState::PartiallyFilled
+                        | OrderState::Reserved
+                        | OrderState::Submitted
+                ) {
+                    return Err(EngineError::InvalidOrderState {
+                        order_hash: order.hash,
+                        state: order.state,
+                    });
+                }
+
+                let book = books
+                    .entry(order.order.market_id)
+                    .or_insert_with(|| MarketOrderBook::new(order.order.market_id));
+                book.insert(order.hash, order.order.clone())?;
+                if order.filled_claim_amount != U256::ZERO {
+                    book.apply_fill(order.hash, order.filled_claim_amount)?;
+                }
+            }
+
+            records.insert(
+                order.hash,
+                OrderRecord::new(
+                    order.hash,
+                    order.order,
+                    order.state,
+                    order.filled_claim_amount,
+                    order.resting,
+                ),
+            );
+        }
+
+        validate_snapshot_reservations(&records, &snapshot.reservations)?;
+
+        Ok(Self {
+            books,
+            records,
+            reservations: ReservationBook::from_reservations(snapshot.reservations)?,
+            match_config,
+            next_reservation_sequence: snapshot.next_reservation_sequence,
+        })
     }
 
     pub fn submit_order(&mut self, command: SubmitOrder) -> Result<SubmitOrderResult, EngineError> {
@@ -554,4 +649,58 @@ fn released_state(record: &OrderRecord) -> OrderState {
     } else {
         OrderState::PartiallyFilled
     }
+}
+
+fn validate_snapshot_reservations(
+    records: &HashMap<OrderHash, OrderRecord>,
+    reservations: &[Reservation],
+) -> Result<(), EngineError> {
+    let mut reserved_by_order = HashMap::new();
+
+    for reservation in reservations {
+        let is_active = matches!(
+            reservation.status,
+            ReservationStatus::Reserved | ReservationStatus::Submitted
+        );
+
+        for leg in &reservation.legs {
+            let record = records
+                .get(&leg.order_hash)
+                .ok_or(EngineError::MissingOrder(leg.order_hash))?;
+
+            if is_active {
+                if !matches!(record.state(), OrderState::Reserved | OrderState::Submitted) {
+                    return Err(EngineError::InvalidOrderState {
+                        order_hash: leg.order_hash,
+                        state: record.state(),
+                    });
+                }
+
+                let current = reserved_by_order
+                    .get(&leg.order_hash)
+                    .copied()
+                    .unwrap_or(U256::ZERO);
+                let next = current
+                    .checked_add(leg.claim_amount)
+                    .ok_or(EngineError::ArithmeticOverflow)?;
+                reserved_by_order.insert(leg.order_hash, next);
+            }
+        }
+    }
+
+    for (order_hash, reserved) in reserved_by_order {
+        let record = records
+            .get(&order_hash)
+            .ok_or(EngineError::MissingOrder(order_hash))?;
+        let available = remaining_claim_amount(&record.order, record.filled_claim_amount)?;
+        if reserved > available {
+            return Err(EngineError::ReservedAmountExceedsAvailable {
+                order_hash,
+                reserved,
+                available,
+            });
+        }
+    }
+
+    Ok(())
 }

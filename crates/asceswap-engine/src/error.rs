@@ -2,7 +2,7 @@ use asceswap_matcher::MatchError;
 use asceswap_math::MathError;
 use asceswap_orderbook::BookError;
 use asceswap_state::{OrderState, ReservationId, StateError};
-use asceswap_types::{MarketId, OrderHash};
+use asceswap_types::{MarketId, OrderHash, U256};
 use asceswap_validation::ValidationError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,9 +11,19 @@ pub enum EngineError {
     MissingOrder(OrderHash),
     MissingMarket(MarketId),
     TimeOverflow,
+    ArithmeticOverflow,
     InvalidOrderState {
         order_hash: OrderHash,
         state: OrderState,
+    },
+    SnapshotOrderHashMismatch {
+        expected: OrderHash,
+        actual: OrderHash,
+    },
+    ReservedAmountExceedsAvailable {
+        order_hash: OrderHash,
+        reserved: U256,
+        available: U256,
     },
     ReservationExpired(ReservationId),
     Validation(ValidationError),
