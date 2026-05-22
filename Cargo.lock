@@ -286,6 +286,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "asceswap-storage"
+version = "0.1.0"
+dependencies = [
+ "asceswap-engine",
+ "asceswap-matcher",
+ "asceswap-state",
+ "asceswap-types",
+ "asceswap-validation",
+]
+
+[[package]]
 name = "asceswap-types"
 version = "0.1.0"
 dependencies = [

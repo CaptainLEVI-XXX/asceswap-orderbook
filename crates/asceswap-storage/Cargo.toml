@@ -1,0 +1,13 @@
+[package]
+name = "asceswap-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+asceswap-engine.workspace = true
+asceswap-matcher.workspace = true
+asceswap-state.workspace = true
+asceswap-types.workspace = true
+asceswap-validation.workspace = true
