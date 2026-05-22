@@ -140,7 +140,7 @@ impl MarketOrderBook {
                 }
             }
             Side::Sell => {
-                for (_price, hashes) in &side_book.levels {
+                for hashes in side_book.levels.values() {
                     for hash in hashes {
                         if let Some(order) = self.orders.get(hash) {
                             orders.push(order);
