@@ -36,14 +36,8 @@ impl<S: EngineStore> OrderbookApiService<S> {
 
     pub fn recover_from_store(store: S, match_config: MatchConfig) -> Result<Self, ApiError> {
         let next_event_sequence = store
-            .load_events()
-            .last()
-            .map(|event| {
-                event
-                    .sequence
-                    .checked_add(1)
-                    .ok_or(ApiError::SequenceOverflow)
-            })
+            .last_event_sequence()?
+            .map(|sequence| sequence.checked_add(1).ok_or(ApiError::SequenceOverflow))
             .transpose()?
             .unwrap_or(0);
         let engine = store.recover_engine(match_config)?;

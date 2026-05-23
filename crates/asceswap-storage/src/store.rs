@@ -16,15 +16,19 @@ pub trait EngineStore {
 
     fn save_snapshot(&mut self, snapshot: StoredSnapshot) -> Result<(), StorageError>;
 
-    fn load_orders(&self) -> Vec<StoredOrder>;
+    fn load_orders(&self) -> Result<Vec<StoredOrder>, StorageError>;
 
-    fn load_reservations(&self) -> Vec<StoredReservation>;
+    fn load_reservations(&self) -> Result<Vec<StoredReservation>, StorageError>;
 
-    fn load_fills(&self) -> Vec<StoredFill>;
+    fn load_fills(&self) -> Result<Vec<StoredFill>, StorageError>;
 
-    fn load_events(&self) -> Vec<StoredEngineEvent>;
+    fn load_events(&self) -> Result<Vec<StoredEngineEvent>, StorageError>;
 
-    fn load_snapshot(&self) -> Option<StoredSnapshot>;
+    fn load_snapshot(&self) -> Result<Option<StoredSnapshot>, StorageError>;
+
+    fn last_event_sequence(&self) -> Result<Option<u64>, StorageError> {
+        Ok(self.load_events()?.last().map(|event| event.sequence))
+    }
 
     fn persist_engine_snapshot(
         &mut self,
@@ -74,7 +78,7 @@ pub trait EngineStore {
 
     fn recover_engine(&self, match_config: MatchConfig) -> Result<AsceSwapEngine, StorageError> {
         let snapshot = self
-            .load_snapshot()
+            .load_snapshot()?
             .ok_or(StorageError::MissingSnapshot)?
             .engine;
         AsceSwapEngine::from_snapshot(match_config, snapshot).map_err(StorageError::Recovery)

@@ -81,8 +81,8 @@ fn persists_snapshot_and_recovers_engine() {
         .unwrap();
     let mut recovered = store.recover_engine(MatchConfig::default()).unwrap();
 
-    assert_eq!(store.load_orders().len(), 2);
-    assert_eq!(store.load_reservations().len(), 1);
+    assert_eq!(store.load_orders().unwrap().len(), 2);
+    assert_eq!(store.load_reservations().unwrap().len(), 1);
     assert_eq!(
         recovered.order_record(maker_hash).unwrap().state(),
         OrderState::Reserved
@@ -130,7 +130,7 @@ fn appends_events_in_sequence_order() {
         })
         .unwrap();
 
-    let events = store.load_events();
+    let events = store.load_events().unwrap();
     assert_eq!(events[0].sequence, 1);
     assert_eq!(events[1].sequence, 2);
 }
@@ -169,7 +169,7 @@ fn rejects_event_sequence_overflow_before_appending() {
         store.append_engine_events(u64::MAX, 100, &events),
         Err(StorageError::SequenceOverflow)
     );
-    assert!(store.load_events().is_empty());
+    assert!(store.load_events().unwrap().is_empty());
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn appends_fills_in_sequence_order() {
         })
         .unwrap();
 
-    let fills = store.load_fills();
+    let fills = store.load_fills().unwrap();
     assert_eq!(fills[0].sequence, 1);
     assert_eq!(fills[1].sequence, 2);
 }

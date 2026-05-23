@@ -57,7 +57,7 @@ impl EngineStore for InMemoryEngineStore {
         Ok(())
     }
 
-    fn load_orders(&self) -> Vec<StoredOrder> {
+    fn load_orders(&self) -> Result<Vec<StoredOrder>, StorageError> {
         let mut orders = self.orders.values().cloned().collect::<Vec<_>>();
         orders.sort_by(|left, right| {
             left.snapshot
@@ -65,10 +65,10 @@ impl EngineStore for InMemoryEngineStore {
                 .as_slice()
                 .cmp(right.snapshot.hash.as_slice())
         });
-        orders
+        Ok(orders)
     }
 
-    fn load_reservations(&self) -> Vec<StoredReservation> {
+    fn load_reservations(&self) -> Result<Vec<StoredReservation>, StorageError> {
         let mut reservations = self.reservations.values().cloned().collect::<Vec<_>>();
         reservations.sort_by(|left, right| {
             left.reservation
@@ -76,22 +76,22 @@ impl EngineStore for InMemoryEngineStore {
                 .as_slice()
                 .cmp(right.reservation.id.as_slice())
         });
-        reservations
+        Ok(reservations)
     }
 
-    fn load_fills(&self) -> Vec<StoredFill> {
+    fn load_fills(&self) -> Result<Vec<StoredFill>, StorageError> {
         let mut fills = self.fills.values().cloned().collect::<Vec<_>>();
         fills.sort_by_key(|fill| fill.sequence);
-        fills
+        Ok(fills)
     }
 
-    fn load_events(&self) -> Vec<StoredEngineEvent> {
+    fn load_events(&self) -> Result<Vec<StoredEngineEvent>, StorageError> {
         let mut events = self.events.values().cloned().collect::<Vec<_>>();
         events.sort_by_key(|event| event.sequence);
-        events
+        Ok(events)
     }
 
-    fn load_snapshot(&self) -> Option<StoredSnapshot> {
-        self.snapshot.clone()
+    fn load_snapshot(&self) -> Result<Option<StoredSnapshot>, StorageError> {
+        Ok(self.snapshot.clone())
     }
 }
