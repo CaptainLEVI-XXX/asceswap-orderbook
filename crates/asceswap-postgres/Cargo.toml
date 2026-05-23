@@ -14,3 +14,6 @@ asceswap-types.workspace = true
 asceswap-validation.workspace = true
 postgres.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+asceswap-matcher.workspace = true

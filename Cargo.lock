@@ -296,6 +296,7 @@ name = "asceswap-postgres"
 version = "0.1.0"
 dependencies = [
  "asceswap-engine",
+ "asceswap-matcher",
  "asceswap-math",
  "asceswap-state",
  "asceswap-storage",

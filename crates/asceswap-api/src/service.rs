@@ -217,9 +217,7 @@ impl<S: EngineStore> OrderbookApiService<S> {
             .ok_or(ApiError::SequenceOverflow)?;
 
         self.store
-            .append_engine_events(first_sequence, now, events)?;
-        self.store
-            .persist_engine_snapshot(self.engine.snapshot(), now)?;
+            .persist_engine_update(first_sequence, now, events, self.engine.snapshot())?;
         self.next_event_sequence = next_event_sequence;
 
         Ok(events

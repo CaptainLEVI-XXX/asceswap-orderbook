@@ -76,6 +76,17 @@ pub trait EngineStore {
         Ok(())
     }
 
+    fn persist_engine_update(
+        &mut self,
+        first_sequence: u64,
+        now: u64,
+        events: &[EngineEvent],
+        snapshot: EngineSnapshot,
+    ) -> Result<(), StorageError> {
+        self.append_engine_events(first_sequence, now, events)?;
+        self.persist_engine_snapshot(snapshot, now)
+    }
+
     fn recover_engine(&self, match_config: MatchConfig) -> Result<AsceSwapEngine, StorageError> {
         let snapshot = self
             .load_snapshot()?

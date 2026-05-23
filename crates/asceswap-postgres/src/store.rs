@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use asceswap_engine::{EngineSnapshot, OrderSnapshot};
+use asceswap_engine::{EngineEvent, EngineSnapshot, OrderSnapshot};
 use asceswap_state::{Reservation, ReservationLeg};
 use asceswap_storage::{
     EngineStore, StorageError, StoredEngineEvent, StoredFill, StoredOrder, StoredReservation,
     StoredSnapshot,
 };
 use asceswap_types::{Order, B256};
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, GenericClient, NoTls, Row};
 
 use crate::codec::{
     address_from_bytes, address_to_bytes, b256_from_bytes, b256_to_bytes, claim_side_from_i16,
@@ -147,177 +147,73 @@ impl PostgresEngineStore {
 
 impl EngineStore for PostgresEngineStore {
     fn put_order(&mut self, order: StoredOrder) -> Result<(), StorageError> {
-        let snapshot = order.snapshot;
-        let inner = snapshot.order;
-        let order_hash = b256_to_bytes(snapshot.hash);
-        let salt = u256_to_string(inner.salt);
-        let maker = address_to_bytes(inner.maker);
-        let market_id = b256_to_bytes(inner.market_id);
-        let claim_side = claim_side_to_i16(inner.claim);
-        let maker_amount = u256_to_string(inner.maker_amount);
-        let taker_amount = u256_to_string(inner.taker_amount);
-        let side = side_to_i16(inner.side);
-        let expiration = u256_to_string(inner.expiration);
-        let epoch = u256_to_string(inner.epoch);
-        let max_fee_rate_bps = i32::from(inner.max_fee_rate_bps);
-        let order_state = order_state_to_str(snapshot.state);
-        let filled_claim_amount = u256_to_string(snapshot.filled_claim_amount);
-        let created_at = u64_to_i64("order.created_at", order.created_at)?;
-        let updated_at = u64_to_i64("order.updated_at", order.updated_at)?;
-
-        self.client
-            .borrow_mut()
-            .execute(
-                UPSERT_ORDER_SQL,
-                &[
-                    &order_hash,
-                    &salt,
-                    &maker,
-                    &market_id,
-                    &claim_side,
-                    &maker_amount,
-                    &taker_amount,
-                    &side,
-                    &expiration,
-                    &epoch,
-                    &max_fee_rate_bps,
-                    &order_state,
-                    &filled_claim_amount,
-                    &snapshot.resting,
-                    &created_at,
-                    &updated_at,
-                ],
-            )
-            .map_err(db_error)?;
-
-        Ok(())
+        let mut client = self.client.borrow_mut();
+        write_order(&mut *client, order)
     }
 
     fn put_reservation(&mut self, reservation: StoredReservation) -> Result<(), StorageError> {
-        let inner = reservation.reservation;
-        let reservation_id = b256_to_bytes(inner.id);
-        let status = reservation_status_to_str(inner.status);
-        let created_at = u64_to_i64("reservation.created_at", inner.created_at)?;
-        let expires_at = match inner.expires_at {
-            Some(value) => Some(u64_to_i64("reservation.expires_at", value)?),
-            None => None,
-        };
-        let updated_at = u64_to_i64("reservation.updated_at", reservation.updated_at)?;
-
         let mut client = self.client.borrow_mut();
-        client
-            .execute(
-                UPSERT_RESERVATION_SQL,
-                &[
-                    &reservation_id,
-                    &status,
-                    &created_at,
-                    &expires_at,
-                    &updated_at,
-                ],
-            )
-            .map_err(db_error)?;
-        client
-            .execute(
-                "DELETE FROM reservation_legs WHERE reservation_id = $1",
-                &[&reservation_id],
-            )
-            .map_err(db_error)?;
-
-        for (index, leg) in inner.legs.iter().enumerate() {
-            let leg_index = usize_to_i32("reservation.leg_index", index)?;
-            let order_hash = b256_to_bytes(leg.order_hash);
-            let role = reservation_leg_role_to_i16(leg.role);
-            let claim_amount = u256_to_string(leg.claim_amount);
-            client
-                .execute(
-                    INSERT_RESERVATION_LEG_SQL,
-                    &[
-                        &reservation_id,
-                        &leg_index,
-                        &order_hash,
-                        &role,
-                        &claim_amount,
-                    ],
-                )
-                .map_err(db_error)?;
-        }
-
-        Ok(())
+        let mut tx = client.transaction().map_err(db_error)?;
+        write_reservation(&mut tx, reservation)?;
+        tx.commit().map_err(db_error)
     }
 
     fn append_fill(&mut self, fill: StoredFill) -> Result<(), StorageError> {
-        let sequence = u64_to_i64("fill.sequence", fill.sequence)?;
-        let reservation_id = b256_to_bytes(fill.reservation_id);
-        let order_hash = b256_to_bytes(fill.order_hash);
-        let claim_amount = u256_to_string(fill.claim_amount);
-        let new_filled_claim_amount = u256_to_string(fill.new_filled_claim_amount);
-        let created_at = u64_to_i64("fill.created_at", fill.created_at)?;
-
-        let written = self
-            .client
-            .borrow_mut()
-            .execute(
-                INSERT_FILL_SQL,
-                &[
-                    &sequence,
-                    &reservation_id,
-                    &order_hash,
-                    &claim_amount,
-                    &new_filled_claim_amount,
-                    &created_at,
-                ],
-            )
-            .map_err(db_error)?;
-        if written == 0 {
-            return Err(StorageError::DuplicateFillSequence(fill.sequence));
-        }
-
-        Ok(())
+        let mut client = self.client.borrow_mut();
+        write_fill(&mut *client, fill)
     }
 
     fn append_event(&mut self, event: StoredEngineEvent) -> Result<(), StorageError> {
-        let sequence = u64_to_i64("event.sequence", event.sequence)?;
-        let created_at = u64_to_i64("event.created_at", event.created_at)?;
-        let encoded = encode_event(&event.event);
-
-        let written = self
-            .client
-            .borrow_mut()
-            .execute(
-                INSERT_EVENT_SQL,
-                &[&sequence, &created_at, &encoded.kind, &encoded.payload],
-            )
-            .map_err(db_error)?;
-        if written == 0 {
-            return Err(StorageError::DuplicateEventSequence(event.sequence));
-        }
-
-        Ok(())
+        let mut client = self.client.borrow_mut();
+        write_event(&mut *client, event)
     }
 
     fn save_snapshot(&mut self, snapshot: StoredSnapshot) -> Result<(), StorageError> {
-        let next_reservation_sequence = u64_to_i64(
-            "snapshot.next_reservation_sequence",
-            snapshot.engine.next_reservation_sequence,
-        )?;
-        let created_at = u64_to_i64("snapshot.created_at", snapshot.created_at)?;
-        let payload = serde_json::json!({
-            "source": "normalized_tables",
-            "order_count": snapshot.engine.orders.len(),
-            "reservation_count": snapshot.engine.reservations.len(),
-        })
-        .to_string();
+        let mut client = self.client.borrow_mut();
+        write_snapshot(&mut *client, snapshot)
+    }
 
-        self.client
-            .borrow_mut()
-            .execute(
-                INSERT_SNAPSHOT_SQL,
-                &[&next_reservation_sequence, &created_at, &payload],
-            )
-            .map_err(db_error)?;
+    fn persist_engine_snapshot(
+        &mut self,
+        snapshot: EngineSnapshot,
+        now: u64,
+    ) -> Result<(), StorageError> {
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction().map_err(db_error)?;
+        write_engine_snapshot(&mut tx, snapshot, now)?;
+        tx.commit().map_err(db_error)
+    }
 
-        Ok(())
+    fn append_engine_events(
+        &mut self,
+        first_sequence: u64,
+        now: u64,
+        events: &[EngineEvent],
+    ) -> Result<(), StorageError> {
+        let events = stored_events(first_sequence, now, events)?;
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction().map_err(db_error)?;
+        for event in events {
+            write_event(&mut tx, event)?;
+        }
+        tx.commit().map_err(db_error)
+    }
+
+    fn persist_engine_update(
+        &mut self,
+        first_sequence: u64,
+        now: u64,
+        events: &[EngineEvent],
+        snapshot: EngineSnapshot,
+    ) -> Result<(), StorageError> {
+        let events = stored_events(first_sequence, now, events)?;
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction().map_err(db_error)?;
+        for event in events {
+            write_event(&mut tx, event)?;
+        }
+        write_engine_snapshot(&mut tx, snapshot, now)?;
+        tx.commit().map_err(db_error)
     }
 
     fn load_orders(&self) -> Result<Vec<StoredOrder>, StorageError> {
@@ -451,6 +347,226 @@ impl EngineStore for PostgresEngineStore {
             .map(|sequence| i64_to_u64("engine_events.sequence", sequence))
             .transpose()
     }
+}
+
+fn write_engine_snapshot(
+    client: &mut impl GenericClient,
+    snapshot: EngineSnapshot,
+    now: u64,
+) -> Result<(), StorageError> {
+    for order in &snapshot.orders {
+        write_order(client, StoredOrder::from_snapshot(order.clone(), now))?;
+    }
+    for reservation in &snapshot.reservations {
+        write_reservation(
+            client,
+            StoredReservation::from_reservation(reservation.clone(), now),
+        )?;
+    }
+
+    write_snapshot(
+        client,
+        StoredSnapshot {
+            engine: snapshot,
+            created_at: now,
+        },
+    )
+}
+
+fn stored_events(
+    first_sequence: u64,
+    now: u64,
+    events: &[EngineEvent],
+) -> Result<Vec<StoredEngineEvent>, StorageError> {
+    let mut stored_events = Vec::with_capacity(events.len());
+    for (offset, event) in events.iter().enumerate() {
+        let sequence = first_sequence
+            .checked_add(offset as u64)
+            .ok_or(StorageError::SequenceOverflow)?;
+        stored_events.push(StoredEngineEvent {
+            sequence,
+            created_at: now,
+            event: event.clone(),
+        });
+    }
+
+    Ok(stored_events)
+}
+
+fn write_order(client: &mut impl GenericClient, order: StoredOrder) -> Result<(), StorageError> {
+    let snapshot = order.snapshot;
+    let inner = snapshot.order;
+    let order_hash = b256_to_bytes(snapshot.hash);
+    let salt = u256_to_string(inner.salt);
+    let maker = address_to_bytes(inner.maker);
+    let market_id = b256_to_bytes(inner.market_id);
+    let claim_side = claim_side_to_i16(inner.claim);
+    let maker_amount = u256_to_string(inner.maker_amount);
+    let taker_amount = u256_to_string(inner.taker_amount);
+    let side = side_to_i16(inner.side);
+    let expiration = u256_to_string(inner.expiration);
+    let epoch = u256_to_string(inner.epoch);
+    let max_fee_rate_bps = i32::from(inner.max_fee_rate_bps);
+    let order_state = order_state_to_str(snapshot.state);
+    let filled_claim_amount = u256_to_string(snapshot.filled_claim_amount);
+    let created_at = u64_to_i64("order.created_at", order.created_at)?;
+    let updated_at = u64_to_i64("order.updated_at", order.updated_at)?;
+
+    client
+        .execute(
+            UPSERT_ORDER_SQL,
+            &[
+                &order_hash,
+                &salt,
+                &maker,
+                &market_id,
+                &claim_side,
+                &maker_amount,
+                &taker_amount,
+                &side,
+                &expiration,
+                &epoch,
+                &max_fee_rate_bps,
+                &order_state,
+                &filled_claim_amount,
+                &snapshot.resting,
+                &created_at,
+                &updated_at,
+            ],
+        )
+        .map_err(db_error)?;
+
+    Ok(())
+}
+
+fn write_reservation(
+    client: &mut impl GenericClient,
+    reservation: StoredReservation,
+) -> Result<(), StorageError> {
+    let inner = reservation.reservation;
+    let reservation_id = b256_to_bytes(inner.id);
+    let status = reservation_status_to_str(inner.status);
+    let created_at = u64_to_i64("reservation.created_at", inner.created_at)?;
+    let expires_at = match inner.expires_at {
+        Some(value) => Some(u64_to_i64("reservation.expires_at", value)?),
+        None => None,
+    };
+    let updated_at = u64_to_i64("reservation.updated_at", reservation.updated_at)?;
+
+    client
+        .execute(
+            UPSERT_RESERVATION_SQL,
+            &[
+                &reservation_id,
+                &status,
+                &created_at,
+                &expires_at,
+                &updated_at,
+            ],
+        )
+        .map_err(db_error)?;
+    client
+        .execute(
+            "DELETE FROM reservation_legs WHERE reservation_id = $1",
+            &[&reservation_id],
+        )
+        .map_err(db_error)?;
+
+    for (index, leg) in inner.legs.iter().enumerate() {
+        let leg_index = usize_to_i32("reservation.leg_index", index)?;
+        let order_hash = b256_to_bytes(leg.order_hash);
+        let role = reservation_leg_role_to_i16(leg.role);
+        let claim_amount = u256_to_string(leg.claim_amount);
+        client
+            .execute(
+                INSERT_RESERVATION_LEG_SQL,
+                &[
+                    &reservation_id,
+                    &leg_index,
+                    &order_hash,
+                    &role,
+                    &claim_amount,
+                ],
+            )
+            .map_err(db_error)?;
+    }
+
+    Ok(())
+}
+
+fn write_fill(client: &mut impl GenericClient, fill: StoredFill) -> Result<(), StorageError> {
+    let sequence = u64_to_i64("fill.sequence", fill.sequence)?;
+    let reservation_id = b256_to_bytes(fill.reservation_id);
+    let order_hash = b256_to_bytes(fill.order_hash);
+    let claim_amount = u256_to_string(fill.claim_amount);
+    let new_filled_claim_amount = u256_to_string(fill.new_filled_claim_amount);
+    let created_at = u64_to_i64("fill.created_at", fill.created_at)?;
+
+    let written = client
+        .execute(
+            INSERT_FILL_SQL,
+            &[
+                &sequence,
+                &reservation_id,
+                &order_hash,
+                &claim_amount,
+                &new_filled_claim_amount,
+                &created_at,
+            ],
+        )
+        .map_err(db_error)?;
+    if written == 0 {
+        return Err(StorageError::DuplicateFillSequence(fill.sequence));
+    }
+
+    Ok(())
+}
+
+fn write_event(
+    client: &mut impl GenericClient,
+    event: StoredEngineEvent,
+) -> Result<(), StorageError> {
+    let sequence = u64_to_i64("event.sequence", event.sequence)?;
+    let created_at = u64_to_i64("event.created_at", event.created_at)?;
+    let encoded = encode_event(&event.event);
+
+    let written = client
+        .execute(
+            INSERT_EVENT_SQL,
+            &[&sequence, &created_at, &encoded.kind, &encoded.payload],
+        )
+        .map_err(db_error)?;
+    if written == 0 {
+        return Err(StorageError::DuplicateEventSequence(event.sequence));
+    }
+
+    Ok(())
+}
+
+fn write_snapshot(
+    client: &mut impl GenericClient,
+    snapshot: StoredSnapshot,
+) -> Result<(), StorageError> {
+    let next_reservation_sequence = u64_to_i64(
+        "snapshot.next_reservation_sequence",
+        snapshot.engine.next_reservation_sequence,
+    )?;
+    let created_at = u64_to_i64("snapshot.created_at", snapshot.created_at)?;
+    let payload = serde_json::json!({
+        "source": "normalized_tables",
+        "order_count": snapshot.engine.orders.len(),
+        "reservation_count": snapshot.engine.reservations.len(),
+    })
+    .to_string();
+
+    client
+        .execute(
+            INSERT_SNAPSHOT_SQL,
+            &[&next_reservation_sequence, &created_at, &payload],
+        )
+        .map_err(db_error)?;
+
+    Ok(())
 }
 
 fn order_from_row(row: Row) -> Result<StoredOrder, StorageError> {
