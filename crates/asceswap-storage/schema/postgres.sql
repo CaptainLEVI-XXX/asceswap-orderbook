@@ -34,10 +34,11 @@ CREATE TABLE reservations (
 
 CREATE TABLE reservation_legs (
     reservation_id BYTEA NOT NULL REFERENCES reservations (reservation_id),
+    leg_index INTEGER NOT NULL CHECK (leg_index >= 0),
     order_hash BYTEA NOT NULL REFERENCES orders (order_hash),
     role SMALLINT NOT NULL CHECK (role IN (0, 1)),
     claim_amount NUMERIC(78, 0) NOT NULL,
-    PRIMARY KEY (reservation_id, order_hash, role)
+    PRIMARY KEY (reservation_id, leg_index)
 );
 
 CREATE INDEX reservation_legs_order_idx ON reservation_legs (order_hash);
