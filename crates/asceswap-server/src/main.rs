@@ -1,14 +1,14 @@
 use std::env;
 use std::net::SocketAddr;
 
-use asceswap_api::OrderbookApiService;
-use asceswap_engine::AsceSwapEngine;
+use asceswap_api::{spawn_actor_orderbook_api_service, ActorOrderbookApiService};
 use asceswap_matcher::MatchConfig;
 use asceswap_postgres::PostgresEngineStore;
-use asceswap_server::router;
-use asceswap_storage::EngineStore;
+use asceswap_server::actor_router;
 use asceswap_types::{Address, U256};
 use asceswap_validation::SignatureDomain;
+
+const MARKET_ACTOR_INBOX_CAPACITY: usize = 1_024;
 
 #[tokio::main]
 async fn main() {
@@ -37,22 +37,19 @@ async fn run_from_env() -> Result<(), String> {
         store.run_schema().map_err(|error| format!("{error:?}"))?;
     }
 
-    let service = if store
-        .load_snapshot()
-        .map_err(|error| format!("{error:?}"))?
-        .is_some()
-    {
-        OrderbookApiService::recover_from_store(store, MatchConfig::default())
-            .map_err(|error| format!("{error:?}"))?
-    } else {
-        OrderbookApiService::new(AsceSwapEngine::default(), store)
-    }
+    let service = ActorOrderbookApiService::recover_from_store(
+        store,
+        MatchConfig::default(),
+        MARKET_ACTOR_INBOX_CAPACITY,
+    )
+    .map_err(|error| format!("{error:?}"))?
     .with_signature_domain(signature_domain);
+    let service = spawn_actor_orderbook_api_service(service);
 
     let listener = tokio::net::TcpListener::bind(listen_addr)
         .await
         .map_err(|error| format!("failed to bind {listen_addr}: {error}"))?;
-    axum::serve(listener, router(service))
+    axum::serve(listener, actor_router(service))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| format!("server failed: {error}"))

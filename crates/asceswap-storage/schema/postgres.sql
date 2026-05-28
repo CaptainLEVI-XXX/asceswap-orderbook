@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS orders (
     order_state TEXT NOT NULL,
     filled_claim_amount NUMERIC(78, 0) NOT NULL,
     resting BOOLEAN NOT NULL,
+    accepted_sequence BIGINT CHECK (accepted_sequence IS NULL OR accepted_sequence >= 0),
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL
 );

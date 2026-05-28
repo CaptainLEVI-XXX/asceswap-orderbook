@@ -1,9 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{vec_deque, HashMap, VecDeque};
 
-use asceswap_math::{prepare_fill, price_wad, Price};
+use asceswap_math::{prepare_fill, price_wad, remaining_claim_amount, Price};
 use asceswap_types::{ClaimSide, MarketId, Order, OrderHash, Side, U256};
 
-use crate::level::PriceLevelBook;
+use crate::level::{LevelHashesIter, PriceLevelBook};
 use crate::{BookError, DepthLevel, RestingOrder};
 
 #[derive(Clone, Debug)]
@@ -15,6 +15,31 @@ pub struct MarketOrderBook {
     residual_bids: PriceLevelBook,
     residual_asks: PriceLevelBook,
     orders: HashMap<OrderHash, RestingOrder>,
+}
+
+pub struct PriorityIter<'a> {
+    orders: &'a HashMap<OrderHash, RestingOrder>,
+    levels: LevelHashesIter<'a>,
+    current_level: Option<vec_deque::Iter<'a, OrderHash>>,
+}
+
+impl<'a> Iterator for PriorityIter<'a> {
+    type Item = &'a RestingOrder;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(current_level) = self.current_level.as_mut() {
+                for hash in current_level.by_ref() {
+                    if let Some(order) = self.orders.get(hash) {
+                        return Some(order);
+                    }
+                }
+            }
+
+            self.current_level = self.levels.next().map(VecDeque::iter);
+            self.current_level.as_ref()?;
+        }
+    }
 }
 
 impl MarketOrderBook {
@@ -39,6 +64,26 @@ impl MarketOrderBook {
     }
 
     pub fn insert(&mut self, hash: OrderHash, order: Order) -> Result<Price, BookError> {
+        self.insert_with_sequence(hash, order, U256::ZERO, self.next_sequence)
+    }
+
+    pub fn restore(
+        &mut self,
+        hash: OrderHash,
+        order: Order,
+        filled_claim_amount: U256,
+        accepted_sequence: u64,
+    ) -> Result<Price, BookError> {
+        self.insert_with_sequence(hash, order, filled_claim_amount, accepted_sequence)
+    }
+
+    fn insert_with_sequence(
+        &mut self,
+        hash: OrderHash,
+        order: Order,
+        filled_claim_amount: U256,
+        accepted_sequence: u64,
+    ) -> Result<Price, BookError> {
         order.validate_basic()?;
         if order.market_id != self.market_id {
             return Err(BookError::WrongMarket {
@@ -51,18 +96,23 @@ impl MarketOrderBook {
         }
 
         let price = price_wad(&order)?;
+        if remaining_claim_amount(&order, filled_claim_amount)? == U256::ZERO {
+            return Err(BookError::FilledOrder(hash));
+        }
         let resting_order = RestingOrder {
             hash,
             order,
-            filled_claim_amount: U256::ZERO,
-            accepted_sequence: self.next_sequence,
+            filled_claim_amount,
+            accepted_sequence,
             price,
         };
 
-        self.next_sequence = self
-            .next_sequence
+        let next_sequence = accepted_sequence
             .checked_add(1)
             .ok_or(BookError::SequenceOverflow)?;
+        if self.next_sequence < next_sequence {
+            self.next_sequence = next_sequence;
+        }
 
         self.side_mut(resting_order.order.claim, resting_order.order.side)
             .insert(price, hash);
@@ -122,35 +172,16 @@ impl MarketOrderBook {
     }
 
     pub fn best(&self, claim: ClaimSide, side: Side) -> Option<&RestingOrder> {
-        self.iter_priority(claim, side).into_iter().next()
+        self.iter_priority(claim, side).next()
     }
 
-    pub fn iter_priority(&self, claim: ClaimSide, side: Side) -> Vec<&RestingOrder> {
+    pub fn iter_priority(&self, claim: ClaimSide, side: Side) -> PriorityIter<'_> {
         let side_book = self.side(claim, side);
-        let mut orders = Vec::new();
-
-        match side {
-            Side::Buy => {
-                for (_price, hashes) in side_book.levels.iter().rev() {
-                    for hash in hashes {
-                        if let Some(order) = self.orders.get(hash) {
-                            orders.push(order);
-                        }
-                    }
-                }
-            }
-            Side::Sell => {
-                for hashes in side_book.levels.values() {
-                    for hash in hashes {
-                        if let Some(order) = self.orders.get(hash) {
-                            orders.push(order);
-                        }
-                    }
-                }
-            }
+        PriorityIter {
+            orders: &self.orders,
+            levels: side_book.hashes_by_priority(side),
+            current_level: None,
         }
-
-        orders
     }
 
     pub fn depth(&self, claim: ClaimSide, side: Side) -> Result<Vec<DepthLevel>, BookError> {

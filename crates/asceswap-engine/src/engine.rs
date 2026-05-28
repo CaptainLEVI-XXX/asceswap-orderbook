@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use asceswap_matcher::{plan_match, MatchConfig, MatchPlan};
+use asceswap_matcher::{plan_match_with_filter, MatchConfig, MatchPlan};
 use asceswap_math::{prepare_fill, remaining_claim_amount};
 use asceswap_orderbook::MarketOrderBook;
 use asceswap_state::{
@@ -64,6 +64,7 @@ impl AsceSwapEngine {
                 state: record.state(),
                 filled_claim_amount: record.filled_claim_amount,
                 resting: record.resting,
+                accepted_sequence: self.accepted_sequence(record),
             })
             .collect::<Vec<_>>();
         orders.sort_by(|left, right| left.hash.as_slice().cmp(right.hash.as_slice()));
@@ -89,7 +90,9 @@ impl AsceSwapEngine {
         let mut books = HashMap::new();
         let mut records = HashMap::new();
 
-        for order in snapshot.orders {
+        let mut resting_orders = Vec::new();
+
+        for (fallback_sequence, order) in snapshot.orders.into_iter().enumerate() {
             let actual_hash = order_hash(&order.order);
             if actual_hash != order.hash {
                 return Err(EngineError::SnapshotOrderHashMismatch {
@@ -116,13 +119,10 @@ impl AsceSwapEngine {
                     });
                 }
 
-                let book = books
-                    .entry(order.order.market_id)
-                    .or_insert_with(|| MarketOrderBook::new(order.order.market_id));
-                book.insert(order.hash, order.order.clone())?;
-                if order.filled_claim_amount != U256::ZERO {
-                    book.apply_fill(order.hash, order.filled_claim_amount)?;
-                }
+                let accepted_sequence = order.accepted_sequence.unwrap_or(
+                    u64::try_from(fallback_sequence).map_err(|_| EngineError::TimeOverflow)?,
+                );
+                resting_orders.push((accepted_sequence, order.clone()));
             }
 
             records.insert(
@@ -135,6 +135,24 @@ impl AsceSwapEngine {
                     order.resting,
                 ),
             );
+        }
+
+        resting_orders.sort_by(|(left_sequence, left), (right_sequence, right)| {
+            left_sequence
+                .cmp(right_sequence)
+                .then_with(|| left.hash.as_slice().cmp(right.hash.as_slice()))
+        });
+
+        for (accepted_sequence, order) in resting_orders {
+            let book = books
+                .entry(order.order.market_id)
+                .or_insert_with(|| MarketOrderBook::new(order.order.market_id));
+            book.restore(
+                order.hash,
+                order.order,
+                order.filled_claim_amount,
+                accepted_sequence,
+            )?;
         }
 
         validate_snapshot_reservations(&records, &snapshot.reservations)?;
@@ -191,16 +209,18 @@ impl AsceSwapEngine {
             remaining_claim_amount: validated.remaining_claim_amount,
         });
 
+        let unavailable_maker_hashes = self.unavailable_maker_hashes();
         let plan = {
             let book = self
                 .books
                 .entry(market_id)
                 .or_insert_with(|| MarketOrderBook::new(market_id));
-            plan_match(
+            plan_match_with_filter(
                 book,
                 &command.order,
                 validated.filled_claim_amount,
                 self.match_config,
+                |maker| !unavailable_maker_hashes.contains(&maker.hash),
             )?
         };
 
@@ -301,6 +321,17 @@ impl AsceSwapEngine {
             outcome: SubmitOrderOutcome::Rested { price },
             events,
         })
+    }
+
+    fn accepted_sequence(&self, record: &OrderRecord) -> Option<u64> {
+        if !record.resting {
+            return None;
+        }
+
+        self.books
+            .get(&record.order.market_id)?
+            .get(record.hash)
+            .map(|order| order.accepted_sequence)
     }
 
     pub fn cancel_order(&mut self, command: CancelOrder) -> Result<CancelOrderResult, EngineError> {
@@ -558,6 +589,16 @@ impl AsceSwapEngine {
         }
 
         Ok(())
+    }
+
+    fn unavailable_maker_hashes(&self) -> HashSet<OrderHash> {
+        self.records
+            .iter()
+            .filter_map(|(order_hash, record)| {
+                matches!(record.state(), OrderState::Reserved | OrderState::Submitted)
+                    .then_some(*order_hash)
+            })
+            .collect()
     }
 
     fn restore_leg_states(

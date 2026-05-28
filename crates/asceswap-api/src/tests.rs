@@ -6,10 +6,10 @@ use asceswap_validation::{order_hash, SignatureDomain};
 
 use crate::wire::{encode_b256, encode_u256};
 use crate::{
-    ApiClaimSide, ApiError, ApiOrder, ApiOrderState, ApiSide, ApiSignatureCheck,
-    CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, OrderbookApiService,
-    ReservationActionRequest, SubmitOrderRequest, SubmitOrderResponseOutcome,
-    ValidationContextRequest,
+    spawn_actor_orderbook_api_service_with_capacity, ActorOrderbookApiService, ApiClaimSide,
+    ApiError, ApiOrder, ApiOrderState, ApiSide, ApiSignatureCheck, CancelOrderRequest,
+    MarketDepthRequest, OrderStatusRequest, OrderbookApiService, ReservationActionRequest,
+    SubmitOrderRequest, SubmitOrderResponseOutcome, ValidationContextRequest,
 };
 
 fn market_id() -> B256 {
@@ -71,6 +71,10 @@ fn submit_request(order: &Order, now: u64) -> SubmitOrderRequest {
 
 fn service() -> OrderbookApiService<InMemoryEngineStore> {
     OrderbookApiService::new(AsceSwapEngine::default(), InMemoryEngineStore::new())
+}
+
+fn actor_service() -> ActorOrderbookApiService<InMemoryEngineStore> {
+    ActorOrderbookApiService::new(InMemoryEngineStore::new(), MatchConfig::default(), 8).unwrap()
 }
 
 #[test]
@@ -216,4 +220,143 @@ fn configured_service_requires_wire_signature_bytes() {
         SubmitOrderResponseOutcome::Rejected { reason }
             if reason == "MissingSignatureVerification"
     ));
+}
+
+#[tokio::test]
+async fn actor_service_rests_order_and_reads_depth() {
+    let mut service = actor_service();
+    let order = sell_order(1, 1, 100, 40);
+
+    let response = service
+        .submit_order(submit_request(&order, 100))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        response.outcome,
+        SubmitOrderResponseOutcome::Rested { .. }
+    ));
+    assert_eq!(response.events[0].sequence, 0);
+    assert_eq!(service.router().market_count(), 1);
+
+    let depth = service
+        .market_depth(MarketDepthRequest {
+            market_id: encode_b256(market_id()),
+            claim: ApiClaimSide::Payoff,
+            side: ApiSide::Sell,
+        })
+        .await
+        .unwrap();
+    assert_eq!(depth.levels.len(), 1);
+    assert_eq!(depth.levels[0].total_claim_amount, "100");
+}
+
+#[tokio::test]
+async fn actor_service_recovers_and_continues_event_sequence() {
+    let mut service = actor_service();
+    let first = sell_order(1, 1, 100, 40);
+    service
+        .submit_order(submit_request(&first, 100))
+        .await
+        .unwrap();
+    let (_, store) = service.into_parts();
+
+    let mut recovered =
+        ActorOrderbookApiService::recover_from_store(store, MatchConfig::default(), 8).unwrap();
+    let second = sell_order(2, 2, 100, 45);
+    let response = recovered
+        .submit_order(submit_request(&second, 101))
+        .await
+        .unwrap();
+
+    assert_eq!(response.events[0].sequence, 3);
+}
+
+#[tokio::test]
+async fn actor_service_matches_and_commits_reservation() {
+    let mut service = actor_service();
+    let maker = sell_order(1, 1, 100, 40);
+    let taker = buy_order(2, 2, 100, 50);
+    service
+        .submit_order(submit_request(&maker, 100))
+        .await
+        .unwrap();
+
+    let taker_response = service
+        .submit_order(submit_request(&taker, 101))
+        .await
+        .unwrap();
+    let reservation_id = match taker_response.outcome {
+        SubmitOrderResponseOutcome::Matched { reservation_id, .. } => reservation_id,
+        other => panic!("expected matched outcome, got {other:?}"),
+    };
+
+    service
+        .mark_reservation_submitted(ReservationActionRequest {
+            reservation_id: reservation_id.clone(),
+            now: 102,
+        })
+        .await
+        .unwrap();
+    service
+        .commit_reservation(ReservationActionRequest {
+            reservation_id,
+            now: 103,
+        })
+        .await
+        .unwrap();
+
+    let status = service
+        .order_status(OrderStatusRequest {
+            order_hash: encode_b256(order_hash(&maker)),
+        })
+        .await
+        .unwrap();
+    assert_eq!(status.state, ApiOrderState::Filled);
+}
+
+#[tokio::test]
+async fn actor_service_returns_empty_depth_for_unknown_market() {
+    let mut service = actor_service();
+
+    let depth = service
+        .market_depth(MarketDepthRequest {
+            market_id: encode_b256(B256::repeat_byte(99)),
+            claim: ApiClaimSide::Payoff,
+            side: ApiSide::Sell,
+        })
+        .await
+        .unwrap();
+
+    assert!(depth.levels.is_empty());
+}
+
+#[tokio::test]
+async fn actor_api_handle_serializes_service_requests() {
+    let handle = spawn_actor_orderbook_api_service_with_capacity(actor_service(), 8).unwrap();
+    let order = sell_order(1, 1, 100, 40);
+
+    let response = handle
+        .submit_order(submit_request(&order, 100))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        response.outcome,
+        SubmitOrderResponseOutcome::Rested { .. }
+    ));
+    let status = handle
+        .order_status(OrderStatusRequest {
+            order_hash: encode_b256(order_hash(&order)),
+        })
+        .await
+        .unwrap();
+    assert_eq!(status.state, ApiOrderState::Open);
+}
+
+#[test]
+fn actor_api_handle_requires_bounded_nonzero_inbox() {
+    let error = spawn_actor_orderbook_api_service_with_capacity(actor_service(), 0).unwrap_err();
+
+    assert_eq!(error, ApiError::ServiceInboxCapacityZero);
 }

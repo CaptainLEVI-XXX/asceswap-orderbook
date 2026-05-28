@@ -149,6 +149,49 @@ fn crossed_order_creates_reservation_and_marks_orders_reserved() {
 }
 
 #[test]
+fn reserved_maker_is_skipped_for_next_taker() {
+    let mut engine = AsceSwapEngine::default();
+    let first_maker = sell_order(1, 1, 100, 40);
+    let second_maker = sell_order(2, 2, 100, 45);
+    let first_maker_hash = order_hash(&first_maker);
+    let second_maker_hash = order_hash(&second_maker);
+    engine.submit_order(submit(first_maker, 100)).unwrap();
+    engine.submit_order(submit(second_maker, 101)).unwrap();
+
+    let first_taker = buy_order(3, 3, 100, 50);
+    let first_result = engine
+        .submit_order(submit(first_taker, 102).with_reservation_ttl_secs(Some(10)))
+        .unwrap();
+    match first_result.outcome {
+        SubmitOrderOutcome::Matched { plan, .. } => {
+            assert_eq!(plan.maker_fills[0].order_hash, first_maker_hash);
+        }
+        other => panic!("expected first match, got {other:?}"),
+    }
+
+    let second_taker = buy_order(4, 4, 100, 50);
+    let second_result = engine
+        .submit_order(submit(second_taker, 103).with_reservation_ttl_secs(Some(10)))
+        .unwrap();
+
+    match second_result.outcome {
+        SubmitOrderOutcome::Matched { plan, .. } => {
+            assert_eq!(plan.maker_fills.len(), 1);
+            assert_eq!(plan.maker_fills[0].order_hash, second_maker_hash);
+        }
+        other => panic!("expected second match, got {other:?}"),
+    }
+    assert_eq!(
+        engine.order_record(first_maker_hash).unwrap().state(),
+        OrderState::Reserved
+    );
+    assert_eq!(
+        engine.order_record(second_maker_hash).unwrap().state(),
+        OrderState::Reserved
+    );
+}
+
+#[test]
 fn submitted_reservation_commit_applies_fills_and_removes_filled_maker() {
     let mut engine = AsceSwapEngine::default();
     let maker_order = rest_maker(&mut engine);
@@ -263,6 +306,30 @@ fn snapshot_recovery_preserves_books_records_and_reservations() {
         recovered.order_record(taker_hash).unwrap().state(),
         OrderState::Inactive
     );
+}
+
+#[test]
+fn snapshot_recovery_preserves_same_price_fifo_priority() {
+    let mut engine = AsceSwapEngine::default();
+    let first = sell_order(1, 1, 100, 40);
+    let second = sell_order(2, 2, 100, 40);
+    let first_hash = order_hash(&first);
+    let second_hash = order_hash(&second);
+    engine.submit_order(submit(first, 100)).unwrap();
+    engine.submit_order(submit(second, 101)).unwrap();
+
+    let mut snapshot = engine.snapshot();
+    snapshot.orders.reverse();
+    let recovered = AsceSwapEngine::from_snapshot(MatchConfig::default(), snapshot).unwrap();
+    let priority = recovered
+        .market_book(market_id())
+        .unwrap()
+        .iter_priority(ClaimSide::Payoff, Side::Sell)
+        .into_iter()
+        .map(|order| order.hash)
+        .collect::<Vec<_>>();
+
+    assert_eq!(priority, vec![first_hash, second_hash]);
 }
 
 #[test]

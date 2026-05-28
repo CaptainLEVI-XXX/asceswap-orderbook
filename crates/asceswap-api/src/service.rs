@@ -80,28 +80,9 @@ impl<S: EngineStore> OrderbookApiService<S> {
             .submit_order(request.to_command_with_signature_domain(self.signature_domain)?)?;
         let events = self.persist_and_project_events(now, &result.events)?;
 
-        let outcome = match result.outcome {
-            EngineSubmitOrderOutcome::Rejected { reason } => SubmitOrderResponseOutcome::Rejected {
-                reason: format!("{reason:?}"),
-            },
-            EngineSubmitOrderOutcome::Rested { price } => SubmitOrderResponseOutcome::Rested {
-                price_wad: encode_u256(price.wad()),
-            },
-            EngineSubmitOrderOutcome::Inactive => SubmitOrderResponseOutcome::Inactive,
-            EngineSubmitOrderOutcome::Matched {
-                reservation_id,
-                plan,
-            } => SubmitOrderResponseOutcome::Matched {
-                reservation_id: encode_b256(reservation_id),
-                match_kind: ApiMatchKind::from(plan.match_kind),
-                taker_claim_fill_amount: encode_u256(plan.taker_claim_fill_amount),
-                maker_count: plan.maker_fills.len(),
-            },
-        };
-
         Ok(SubmitOrderResponse {
             order_hash: encode_b256(result.order_hash),
-            outcome,
+            outcome: submit_outcome_from_engine(result.outcome),
             events,
         })
     }
@@ -231,10 +212,37 @@ impl<S: EngineStore> OrderbookApiService<S> {
             .persist_engine_update(first_sequence, now, events, self.engine.snapshot())?;
         self.next_event_sequence = next_event_sequence;
 
-        Ok(events
-            .iter()
-            .enumerate()
-            .map(|(offset, event)| ApiEvent::from_engine(first_sequence + offset as u64, event))
-            .collect())
+        Ok(project_events(first_sequence, events))
     }
+}
+
+pub(crate) fn submit_outcome_from_engine(
+    outcome: EngineSubmitOrderOutcome,
+) -> SubmitOrderResponseOutcome {
+    match outcome {
+        EngineSubmitOrderOutcome::Rejected { reason } => SubmitOrderResponseOutcome::Rejected {
+            reason: format!("{reason:?}"),
+        },
+        EngineSubmitOrderOutcome::Rested { price } => SubmitOrderResponseOutcome::Rested {
+            price_wad: encode_u256(price.wad()),
+        },
+        EngineSubmitOrderOutcome::Inactive => SubmitOrderResponseOutcome::Inactive,
+        EngineSubmitOrderOutcome::Matched {
+            reservation_id,
+            plan,
+        } => SubmitOrderResponseOutcome::Matched {
+            reservation_id: encode_b256(reservation_id),
+            match_kind: ApiMatchKind::from(plan.match_kind),
+            taker_claim_fill_amount: encode_u256(plan.taker_claim_fill_amount),
+            maker_count: plan.maker_fills.len(),
+        },
+    }
+}
+
+pub(crate) fn project_events(first_sequence: u64, events: &[EngineEvent]) -> Vec<ApiEvent> {
+    events
+        .iter()
+        .enumerate()
+        .map(|(offset, event)| ApiEvent::from_engine(first_sequence + offset as u64, event))
+        .collect()
 }

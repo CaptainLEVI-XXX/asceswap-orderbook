@@ -200,6 +200,7 @@ fn codec_rejects_out_of_range_storage_values() {
 #[test]
 fn postgres_schema_preserves_reservation_leg_order_and_payloads() {
     assert!(POSTGRES_SCHEMA.contains("leg_index INTEGER NOT NULL"));
+    assert!(POSTGRES_SCHEMA.contains("accepted_sequence BIGINT"));
     assert!(POSTGRES_SCHEMA.contains("payload JSONB NOT NULL"));
     assert!(POSTGRES_SCHEMA.contains("NUMERIC(78, 0)"));
 }

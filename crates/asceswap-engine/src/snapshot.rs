@@ -8,6 +8,7 @@ pub struct OrderSnapshot {
     pub state: OrderState,
     pub filled_claim_amount: U256,
     pub resting: bool,
+    pub accepted_sequence: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

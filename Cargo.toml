@@ -7,6 +7,7 @@ members = [
     "crates/asceswap-validation",
     "crates/asceswap-state",
     "crates/asceswap-engine",
+    "crates/asceswap-market-actor",
     "crates/asceswap-storage",
     "crates/asceswap-postgres",
     "crates/asceswap-api",
@@ -27,6 +28,7 @@ asceswap-api = { path = "crates/asceswap-api" }
 asceswap-engine = { path = "crates/asceswap-engine" }
 asceswap-math = { path = "crates/asceswap-math" }
 asceswap-matcher = { path = "crates/asceswap-matcher" }
+asceswap-market-actor = { path = "crates/asceswap-market-actor" }
 asceswap-orderbook = { path = "crates/asceswap-orderbook" }
 asceswap-state = { path = "crates/asceswap-state" }
 asceswap-postgres = { path = "crates/asceswap-postgres" }

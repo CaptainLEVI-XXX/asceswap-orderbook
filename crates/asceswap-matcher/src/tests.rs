@@ -2,8 +2,8 @@ use asceswap_orderbook::MarketOrderBook;
 use asceswap_types::{Address, ClaimSide, MarketId, MatchKind, Order, OrderHash, Side, B256, U256};
 
 use crate::{
-    plan_direct, plan_match, plan_merge_assisted, plan_mint_assisted, MatchConfig, MatchError,
-    CONTRACT_MAX_MAKER_ORDERS,
+    plan_direct, plan_match, plan_match_with_filter, plan_merge_assisted, plan_mint_assisted,
+    MatchConfig, MatchError, CONTRACT_MAX_MAKER_ORDERS,
 };
 
 fn market() -> MarketId {
@@ -111,6 +111,40 @@ fn returns_none_when_prices_do_not_cross() {
 
     assert_eq!(
         plan_direct(&book, &taker, U256::ZERO, MatchConfig::default()).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn filtered_match_skips_unavailable_crossed_makers() {
+    let mut book = MarketOrderBook::new(market());
+    book.insert(hash(1), order(ClaimSide::Payoff, Side::Sell, 100, 40, 1))
+        .unwrap();
+    book.insert(hash(2), order(ClaimSide::Payoff, Side::Sell, 100, 45, 2))
+        .unwrap();
+    let taker = order(ClaimSide::Payoff, Side::Buy, 50, 100, 3);
+
+    let plan = plan_match_with_filter(&book, &taker, U256::ZERO, MatchConfig::default(), |maker| {
+        maker.hash != hash(1)
+    })
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(plan.maker_fills.len(), 1);
+    assert_eq!(plan.maker_fills[0].order_hash, hash(2));
+    assert_eq!(plan.total_maker_collateral_amount, U256::from(45));
+}
+
+#[test]
+fn filtered_match_returns_none_when_all_crossed_makers_are_unavailable() {
+    let mut book = MarketOrderBook::new(market());
+    book.insert(hash(1), order(ClaimSide::Payoff, Side::Sell, 100, 40, 1))
+        .unwrap();
+    let taker = order(ClaimSide::Payoff, Side::Buy, 50, 100, 2);
+
+    assert_eq!(
+        plan_match_with_filter(&book, &taker, U256::ZERO, MatchConfig::default(), |_| false,)
+            .unwrap(),
         None
     );
 }

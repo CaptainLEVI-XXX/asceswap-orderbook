@@ -24,10 +24,10 @@ const UPSERT_ORDER_SQL: &str = r#"
 INSERT INTO orders (
     order_hash, salt, maker, market_id, claim_side, maker_amount, taker_amount,
     side, expiration, epoch, max_fee_rate_bps, order_state,
-    filled_claim_amount, resting, created_at, updated_at
+    filled_claim_amount, resting, accepted_sequence, created_at, updated_at
 ) VALUES (
     $1, $2::numeric, $3, $4, $5, $6::numeric, $7::numeric,
-    $8, $9::numeric, $10::numeric, $11, $12, $13::numeric, $14, $15, $16
+    $8, $9::numeric, $10::numeric, $11, $12, $13::numeric, $14, $15, $16, $17
 )
 ON CONFLICT (order_hash) DO UPDATE SET
     salt = EXCLUDED.salt,
@@ -43,6 +43,7 @@ ON CONFLICT (order_hash) DO UPDATE SET
     order_state = EXCLUDED.order_state,
     filled_claim_amount = EXCLUDED.filled_claim_amount,
     resting = EXCLUDED.resting,
+    accepted_sequence = EXCLUDED.accepted_sequence,
     created_at = EXCLUDED.created_at,
     updated_at = EXCLUDED.updated_at
 "#;
@@ -84,7 +85,7 @@ const SELECT_ORDERS_SQL: &str = r#"
 SELECT
     order_hash, salt::text, maker, market_id, claim_side, maker_amount::text,
     taker_amount::text, side, expiration::text, epoch::text, max_fee_rate_bps,
-    order_state, filled_claim_amount::text, resting, created_at, updated_at
+    order_state, filled_claim_amount::text, resting, accepted_sequence, created_at, updated_at
 FROM orders
 ORDER BY order_hash
 "#;
@@ -409,6 +410,10 @@ fn write_order(client: &mut impl GenericClient, order: StoredOrder) -> Result<()
     let max_fee_rate_bps = i32::from(inner.max_fee_rate_bps);
     let order_state = order_state_to_str(snapshot.state);
     let filled_claim_amount = u256_to_string(snapshot.filled_claim_amount);
+    let accepted_sequence = snapshot
+        .accepted_sequence
+        .map(|sequence| u64_to_i64("order.accepted_sequence", sequence))
+        .transpose()?;
     let created_at = u64_to_i64("order.created_at", order.created_at)?;
     let updated_at = u64_to_i64("order.updated_at", order.updated_at)?;
 
@@ -430,6 +435,7 @@ fn write_order(client: &mut impl GenericClient, order: StoredOrder) -> Result<()
                 &order_state,
                 &filled_claim_amount,
                 &snapshot.resting,
+                &accepted_sequence,
                 &created_at,
                 &updated_at,
             ],
@@ -589,8 +595,12 @@ fn order_from_row(row: Row) -> Result<StoredOrder, StorageError> {
         row.get::<_, String>(12).as_str(),
     )?;
     let resting = row.get(13);
-    let created_at = i64_to_u64("orders.created_at", row.get(14))?;
-    let updated_at = i64_to_u64("orders.updated_at", row.get(15))?;
+    let accepted_sequence = row
+        .get::<_, Option<i64>>(14)
+        .map(|sequence| i64_to_u64("orders.accepted_sequence", sequence))
+        .transpose()?;
+    let created_at = i64_to_u64("orders.created_at", row.get(15))?;
+    let updated_at = i64_to_u64("orders.updated_at", row.get(16))?;
 
     Ok(StoredOrder {
         snapshot: OrderSnapshot {
@@ -599,6 +609,7 @@ fn order_from_row(row: Row) -> Result<StoredOrder, StorageError> {
             state,
             filled_claim_amount,
             resting,
+            accepted_sequence,
         },
         created_at,
         updated_at,

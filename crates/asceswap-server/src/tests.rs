@@ -1,8 +1,10 @@
 use asceswap_api::{
-    ApiClaimSide, ApiOrder, ApiSide, ApiSignatureCheck, OrderbookApiService, SubmitOrderResponse,
+    spawn_actor_orderbook_api_service_with_capacity, ActorOrderbookApiService, ApiClaimSide,
+    ApiOrder, ApiSide, ApiSignatureCheck, OrderbookApiService, SubmitOrderResponse,
     ValidationContextRequest,
 };
 use asceswap_engine::AsceSwapEngine;
+use asceswap_matcher::MatchConfig;
 use asceswap_storage::InMemoryEngineStore;
 use asceswap_types::{Address, ClaimSide, Order, Side, B256, U256};
 use asceswap_validation::order_hash;
@@ -11,7 +13,8 @@ use axum::http::{Request, StatusCode};
 use serde::de::DeserializeOwned;
 use tower::ServiceExt;
 
-use crate::{router, router_from_state, HealthResponse, ServerState};
+use crate::{actor_router, actor_router_from_state, router, router_from_state, ActorServerState};
+use crate::{HealthResponse, ServerState};
 
 fn market_id() -> B256 {
     B256::repeat_byte(3)
@@ -43,6 +46,14 @@ fn sell_order(salt: u64, maker: u8, claim_amount: u64, collateral_amount: u64) -
 
 fn service() -> OrderbookApiService<InMemoryEngineStore> {
     OrderbookApiService::new(AsceSwapEngine::default(), InMemoryEngineStore::new())
+}
+
+fn actor_service() -> ActorOrderbookApiService<InMemoryEngineStore> {
+    ActorOrderbookApiService::new(InMemoryEngineStore::new(), MatchConfig::default(), 8).unwrap()
+}
+
+fn actor_handle() -> asceswap_api::ActorOrderbookApiHandle {
+    spawn_actor_orderbook_api_service_with_capacity(actor_service(), 8).unwrap()
 }
 
 fn validation(order: &Order, now: u64) -> ValidationContextRequest {
@@ -116,6 +127,31 @@ async fn submit_order_rests_and_broadcasts_events() {
 }
 
 #[tokio::test]
+async fn actor_router_submit_order_rests_and_broadcasts_events() {
+    let state = ActorServerState::new(actor_handle());
+    let mut events = state.subscribe();
+    let app = actor_router_from_state(state);
+    let order = sell_order(1, 1, 100, 40);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(submit_body(&order, 100).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<SubmitOrderResponse>(response.into_body()).await;
+    assert_eq!(body.events.len(), 3);
+    assert_eq!(events.recv().await.unwrap().sequence, 0);
+}
+
+#[tokio::test]
 async fn market_depth_reads_resting_liquidity() {
     let app = router(service());
     let order = sell_order(1, 1, 100, 40);
@@ -155,8 +191,63 @@ async fn market_depth_reads_resting_liquidity() {
 }
 
 #[tokio::test]
+async fn actor_router_market_depth_reads_resting_liquidity() {
+    let app = actor_router(actor_handle());
+    let order = sell_order(1, 1, 100, 40);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(submit_body(&order, 100).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/markets/{}/depth?claim=payoff&side=sell",
+                    encode_b256(market_id())
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<asceswap_api::MarketDepthResponse>(response.into_body()).await;
+    assert_eq!(body.claim, ApiClaimSide::Payoff);
+    assert_eq!(body.side, ApiSide::Sell);
+    assert_eq!(body.levels.len(), 1);
+    assert_eq!(body.levels[0].total_claim_amount, "100");
+}
+
+#[tokio::test]
 async fn bad_order_hash_returns_bad_request() {
     let app = router(service());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/orders/not-a-hash")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn actor_router_bad_order_hash_returns_bad_request() {
+    let app = actor_router(actor_handle());
     let response = app
         .oneshot(
             Request::builder()

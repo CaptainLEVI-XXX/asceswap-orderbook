@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use asceswap_api::{
-    ApiClaimSide, ApiError, ApiEvent, ApiSide, CancelOrderRequest, MarketDepthRequest,
-    OrderStatusRequest, OrderbookApiService, ReservationActionRequest, ReservationActionResponse,
-    SubmitOrderRequest,
+    ActorOrderbookApiHandle, ApiClaimSide, ApiError, ApiEvent, ApiSide, CancelOrderRequest,
+    MarketDepthRequest, OrderStatusRequest, OrderbookApiService, ReservationActionRequest,
+    ReservationActionResponse, SubmitOrderRequest,
 };
 use asceswap_storage::EngineStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -27,12 +27,29 @@ pub struct ServerState<S> {
     events: broadcast::Sender<ApiEvent>,
 }
 
+#[derive(Clone)]
+pub struct ActorServerState {
+    service: ActorOrderbookApiHandle,
+    events: broadcast::Sender<ApiEvent>,
+}
+
 impl<S> Clone for ServerState<S> {
     fn clone(&self) -> Self {
         Self {
             service: Arc::clone(&self.service),
             events: self.events.clone(),
         }
+    }
+}
+
+impl ActorServerState {
+    pub fn new(service: ActorOrderbookApiHandle) -> Self {
+        let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        Self { service, events }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<ApiEvent> {
+        self.events.subscribe()
     }
 }
 
@@ -87,6 +104,37 @@ where
         .with_state(state)
 }
 
+pub fn actor_router(service: ActorOrderbookApiHandle) -> Router {
+    actor_router_from_state(ActorServerState::new(service))
+}
+
+pub fn actor_router_from_state(state: ActorServerState) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/orders", post(actor_submit_order))
+        .route("/orders/cancel", post(actor_cancel_order))
+        .route("/orders/:order_hash", get(actor_order_status))
+        .route("/markets/:market_id/depth", get(actor_market_depth))
+        .route(
+            "/reservations/:reservation_id/submitted",
+            post(actor_mark_reservation_submitted),
+        )
+        .route(
+            "/reservations/:reservation_id/release",
+            post(actor_release_reservation),
+        )
+        .route(
+            "/reservations/:reservation_id/expire",
+            post(actor_expire_reservation),
+        )
+        .route(
+            "/reservations/:reservation_id/commit",
+            post(actor_commit_reservation),
+        )
+        .route("/ws", get(actor_websocket))
+        .with_state(state)
+}
+
 async fn healthz() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
@@ -136,6 +184,53 @@ where
     ))
 }
 
+async fn actor_submit_order(
+    State(state): State<ActorServerState>,
+    Json(request): Json<SubmitOrderRequest>,
+) -> Result<Json<asceswap_api::SubmitOrderResponse>, ServerError> {
+    let response = state.service.submit_order(request).await?;
+    publish_actor_events(&state, &response.events);
+    Ok(Json(response))
+}
+
+async fn actor_cancel_order(
+    State(state): State<ActorServerState>,
+    Json(request): Json<CancelOrderRequest>,
+) -> Result<Json<asceswap_api::CancelOrderResponse>, ServerError> {
+    let response = state.service.cancel_order(request).await?;
+    publish_actor_events(&state, &response.events);
+    Ok(Json(response))
+}
+
+async fn actor_order_status(
+    State(state): State<ActorServerState>,
+    Path(order_hash): Path<String>,
+) -> Result<Json<asceswap_api::OrderStatusResponse>, ServerError> {
+    Ok(Json(
+        state
+            .service
+            .order_status(OrderStatusRequest { order_hash })
+            .await?,
+    ))
+}
+
+async fn actor_market_depth(
+    State(state): State<ActorServerState>,
+    Path(market_id): Path<String>,
+    Query(query): Query<DepthQuery>,
+) -> Result<Json<asceswap_api::MarketDepthResponse>, ServerError> {
+    Ok(Json(
+        state
+            .service
+            .market_depth(MarketDepthRequest {
+                market_id,
+                claim: query.claim,
+                side: query.side,
+            })
+            .await?,
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 struct DepthQuery {
     claim: ApiClaimSide,
@@ -161,6 +256,69 @@ where
 #[derive(Debug, Deserialize)]
 struct ReservationActionBody {
     now: u64,
+}
+
+async fn actor_mark_reservation_submitted(
+    State(state): State<ActorServerState>,
+    Path(reservation_id): Path<String>,
+    Json(body): Json<ReservationActionBody>,
+) -> Result<Json<ReservationActionResponse>, ServerError> {
+    actor_reservation_action(state, reservation_id, body, |service, request| async move {
+        service.mark_reservation_submitted(request).await
+    })
+    .await
+}
+
+async fn actor_release_reservation(
+    State(state): State<ActorServerState>,
+    Path(reservation_id): Path<String>,
+    Json(body): Json<ReservationActionBody>,
+) -> Result<Json<ReservationActionResponse>, ServerError> {
+    actor_reservation_action(state, reservation_id, body, |service, request| async move {
+        service.release_reservation(request).await
+    })
+    .await
+}
+
+async fn actor_expire_reservation(
+    State(state): State<ActorServerState>,
+    Path(reservation_id): Path<String>,
+    Json(body): Json<ReservationActionBody>,
+) -> Result<Json<ReservationActionResponse>, ServerError> {
+    actor_reservation_action(state, reservation_id, body, |service, request| async move {
+        service.expire_reservation(request).await
+    })
+    .await
+}
+
+async fn actor_commit_reservation(
+    State(state): State<ActorServerState>,
+    Path(reservation_id): Path<String>,
+    Json(body): Json<ReservationActionBody>,
+) -> Result<Json<ReservationActionResponse>, ServerError> {
+    actor_reservation_action(state, reservation_id, body, |service, request| async move {
+        service.commit_reservation(request).await
+    })
+    .await
+}
+
+async fn actor_reservation_action<F, Fut>(
+    state: ActorServerState,
+    reservation_id: String,
+    body: ReservationActionBody,
+    action: F,
+) -> Result<Json<ReservationActionResponse>, ServerError>
+where
+    F: FnOnce(ActorOrderbookApiHandle, ReservationActionRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<ReservationActionResponse, ApiError>>,
+{
+    let request = ReservationActionRequest {
+        reservation_id,
+        now: body.now,
+    };
+    let response = action(state.service.clone(), request).await?;
+    publish_actor_events(&state, &response.events);
+    Ok(Json(response))
 }
 
 async fn mark_reservation_submitted<S>(
@@ -243,6 +401,13 @@ where
     Ok(Json(response))
 }
 
+async fn actor_websocket(
+    State(state): State<ActorServerState>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| websocket_events(socket, state.subscribe()))
+}
+
 async fn websocket<S>(
     State(state): State<ServerState<S>>,
     ws: WebSocketUpgrade,
@@ -276,6 +441,12 @@ fn publish_events<S>(state: &ServerState<S>, events: &[ApiEvent]) {
     }
 }
 
+fn publish_actor_events(state: &ActorServerState, events: &[ApiEvent]) {
+    for event in events {
+        let _ = state.events.send(event.clone());
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
@@ -295,9 +466,12 @@ impl IntoResponse for ServerError {
         let status = match self.0 {
             ApiError::InvalidField { .. } => StatusCode::BAD_REQUEST,
             ApiError::OrderNotFound(_) => StatusCode::NOT_FOUND,
-            ApiError::SequenceOverflow | ApiError::Engine(_) | ApiError::Storage(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            ApiError::SequenceOverflow
+            | ApiError::ServiceClosed
+            | ApiError::ServiceInboxCapacityZero
+            | ApiError::Actor(_)
+            | ApiError::Engine(_)
+            | ApiError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(ErrorResponse {
             error: format!("{:?}", self.0),

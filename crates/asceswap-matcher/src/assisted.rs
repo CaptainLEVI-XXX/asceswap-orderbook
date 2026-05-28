@@ -1,5 +1,5 @@
 use asceswap_math::{price_wad, WAD};
-use asceswap_orderbook::MarketOrderBook;
+use asceswap_orderbook::{MarketOrderBook, RestingOrder};
 use asceswap_types::{MatchKind, Order, Side, U256};
 
 use crate::plan::{MatchPlan, PlanBuilder};
@@ -12,6 +12,21 @@ pub fn plan_mint_assisted(
     taker_filled_claim_amount: U256,
     config: MatchConfig,
 ) -> Result<Option<MatchPlan>, MatchError> {
+    plan_mint_assisted_with_filter(book, taker_order, taker_filled_claim_amount, config, |_| {
+        true
+    })
+}
+
+pub fn plan_mint_assisted_with_filter<F>(
+    book: &MarketOrderBook,
+    taker_order: &Order,
+    taker_filled_claim_amount: U256,
+    config: MatchConfig,
+    maker_filter: F,
+) -> Result<Option<MatchPlan>, MatchError>
+where
+    F: Fn(&RestingOrder) -> bool,
+{
     validate_inputs(book, taker_order, taker_filled_claim_amount, config)?;
     if taker_order.side != Side::Buy {
         return Ok(None);
@@ -21,11 +36,15 @@ pub fn plan_mint_assisted(
     let mut builder = PlanBuilder::new(MatchKind::MintAssisted);
 
     for maker in book.iter_priority(taker_order.claim.opposite(), Side::Buy) {
-        if builder.maker_fill_count() == config.max_maker_orders {
+        if maker.price.wad() < WAD - taker_price.wad() {
             break;
         }
 
-        if maker.price.wad() < WAD - taker_price.wad() {
+        if !maker_filter(maker) {
+            continue;
+        }
+
+        if builder.maker_fill_count() == config.max_maker_orders {
             break;
         }
 
@@ -43,6 +62,21 @@ pub fn plan_merge_assisted(
     taker_filled_claim_amount: U256,
     config: MatchConfig,
 ) -> Result<Option<MatchPlan>, MatchError> {
+    plan_merge_assisted_with_filter(book, taker_order, taker_filled_claim_amount, config, |_| {
+        true
+    })
+}
+
+pub fn plan_merge_assisted_with_filter<F>(
+    book: &MarketOrderBook,
+    taker_order: &Order,
+    taker_filled_claim_amount: U256,
+    config: MatchConfig,
+    maker_filter: F,
+) -> Result<Option<MatchPlan>, MatchError>
+where
+    F: Fn(&RestingOrder) -> bool,
+{
     validate_inputs(book, taker_order, taker_filled_claim_amount, config)?;
     if taker_order.side != Side::Sell {
         return Ok(None);
@@ -52,11 +86,15 @@ pub fn plan_merge_assisted(
     let mut builder = PlanBuilder::new(MatchKind::MergeAssisted);
 
     for maker in book.iter_priority(taker_order.claim.opposite(), Side::Sell) {
-        if builder.maker_fill_count() == config.max_maker_orders {
+        if maker.price.wad() > WAD - taker_price.wad() {
             break;
         }
 
-        if maker.price.wad() > WAD - taker_price.wad() {
+        if !maker_filter(maker) {
+            continue;
+        }
+
+        if builder.maker_fill_count() == config.max_maker_orders {
             break;
         }
 

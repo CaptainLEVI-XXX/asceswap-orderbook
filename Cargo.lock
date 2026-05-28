@@ -245,6 +245,7 @@ name = "asceswap-api"
 version = "0.1.0"
 dependencies = [
  "asceswap-engine",
+ "asceswap-market-actor",
  "asceswap-matcher",
  "asceswap-math",
  "asceswap-state",
@@ -253,6 +254,7 @@ dependencies = [
  "asceswap-validation",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -265,6 +267,19 @@ dependencies = [
  "asceswap-state",
  "asceswap-types",
  "asceswap-validation",
+]
+
+[[package]]
+name = "asceswap-market-actor"
+version = "0.1.0"
+dependencies = [
+ "asceswap-engine",
+ "asceswap-matcher",
+ "asceswap-orderbook",
+ "asceswap-state",
+ "asceswap-types",
+ "asceswap-validation",
+ "tokio",
 ]
 
 [[package]]

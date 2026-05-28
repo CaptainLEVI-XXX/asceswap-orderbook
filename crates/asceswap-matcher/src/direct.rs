@@ -1,5 +1,5 @@
 use asceswap_math::price_wad;
-use asceswap_orderbook::MarketOrderBook;
+use asceswap_orderbook::{MarketOrderBook, RestingOrder};
 use asceswap_types::{MatchKind, Order, Side, U256};
 
 use crate::plan::{MatchPlan, PlanBuilder};
@@ -12,21 +12,40 @@ pub fn plan_direct(
     taker_filled_claim_amount: U256,
     config: MatchConfig,
 ) -> Result<Option<MatchPlan>, MatchError> {
+    plan_direct_with_filter(book, taker_order, taker_filled_claim_amount, config, |_| {
+        true
+    })
+}
+
+pub fn plan_direct_with_filter<F>(
+    book: &MarketOrderBook,
+    taker_order: &Order,
+    taker_filled_claim_amount: U256,
+    config: MatchConfig,
+    maker_filter: F,
+) -> Result<Option<MatchPlan>, MatchError>
+where
+    F: Fn(&RestingOrder) -> bool,
+{
     validate_inputs(book, taker_order, taker_filled_claim_amount, config)?;
 
     let taker_price = price_wad(taker_order)?;
     let mut builder = PlanBuilder::new(MatchKind::Direct);
 
     for maker in book.iter_priority(taker_order.claim, taker_order.side.opposite()) {
-        if builder.maker_fill_count() == config.max_maker_orders {
-            break;
-        }
-
         let crossed = match taker_order.side {
             Side::Buy => taker_price >= maker.price,
             Side::Sell => taker_price <= maker.price,
         };
         if !crossed {
+            break;
+        }
+
+        if !maker_filter(maker) {
+            continue;
+        }
+
+        if builder.maker_fill_count() == config.max_maker_orders {
             break;
         }
 
