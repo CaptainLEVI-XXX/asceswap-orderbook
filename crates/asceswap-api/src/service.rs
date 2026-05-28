@@ -5,6 +5,7 @@ use asceswap_engine::{
 use asceswap_matcher::MatchConfig;
 use asceswap_math::remaining_claim_amount;
 use asceswap_storage::EngineStore;
+use asceswap_validation::SignatureDomain;
 
 use crate::event::ApiEvent;
 use crate::request::{
@@ -23,6 +24,7 @@ pub struct OrderbookApiService<S> {
     engine: AsceSwapEngine,
     store: S,
     next_event_sequence: u64,
+    signature_domain: Option<SignatureDomain>,
 }
 
 impl<S: EngineStore> OrderbookApiService<S> {
@@ -31,6 +33,7 @@ impl<S: EngineStore> OrderbookApiService<S> {
             engine,
             store,
             next_event_sequence: 0,
+            signature_domain: None,
         }
     }
 
@@ -46,7 +49,13 @@ impl<S: EngineStore> OrderbookApiService<S> {
             engine,
             store,
             next_event_sequence,
+            signature_domain: None,
         })
+    }
+
+    pub fn with_signature_domain(mut self, signature_domain: SignatureDomain) -> Self {
+        self.signature_domain = Some(signature_domain);
+        self
     }
 
     pub fn engine(&self) -> &AsceSwapEngine {
@@ -66,7 +75,9 @@ impl<S: EngineStore> OrderbookApiService<S> {
         request: SubmitOrderRequest,
     ) -> Result<SubmitOrderResponse, ApiError> {
         let now = request.validation.now;
-        let result = self.engine.submit_order(request.to_command()?)?;
+        let result = self
+            .engine
+            .submit_order(request.to_command_with_signature_domain(self.signature_domain)?)?;
         let events = self.persist_and_project_events(now, &result.events)?;
 
         let outcome = match result.outcome {

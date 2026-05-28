@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use asceswap_engine::{CancelOrder, SubmitOrder};
-use asceswap_validation::OrderValidationContext;
+use asceswap_validation::{
+    verify_order_eoa_signature, OrderValidationContext, SignatureCheck, SignatureDomain,
+};
 
-use crate::wire::{parse_b256, parse_u256, ApiClaimSide, ApiOrder, ApiSide, ApiSignatureCheck};
+use crate::wire::{
+    parse_b256, parse_hex_bytes, parse_u256, ApiClaimSide, ApiOrder, ApiSide, ApiSignatureCheck,
+};
 use crate::ApiError;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,17 +48,50 @@ impl ValidationContextRequest {
 pub struct SubmitOrderRequest {
     pub order: ApiOrder,
     pub validation: ValidationContextRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_bytes: Option<String>,
     pub rest_on_no_match: bool,
     pub reservation_ttl_secs: Option<u64>,
 }
 
 impl SubmitOrderRequest {
     pub fn to_command(&self) -> Result<SubmitOrder, ApiError> {
-        Ok(
-            SubmitOrder::new(self.order.to_order()?, self.validation.to_context()?)
-                .with_rest_on_no_match(self.rest_on_no_match)
-                .with_reservation_ttl_secs(self.reservation_ttl_secs),
-        )
+        self.to_command_with_signature_domain(None)
+    }
+
+    pub fn to_command_with_signature_domain(
+        &self,
+        signature_domain: Option<SignatureDomain>,
+    ) -> Result<SubmitOrder, ApiError> {
+        let order = self.order.to_order()?;
+        let mut context = self.validation.to_context()?;
+
+        if let Some(domain) = signature_domain {
+            let signature = self
+                .signature_bytes
+                .as_deref()
+                .map(|value| parse_hex_bytes("signature_bytes", value))
+                .transpose()?;
+            let signature_check = signature
+                .as_deref()
+                .map(|signature| verify_order_eoa_signature(&order, domain, signature))
+                .map(|valid| {
+                    if valid {
+                        SignatureCheck::Valid
+                    } else {
+                        SignatureCheck::Invalid
+                    }
+                })
+                .unwrap_or(SignatureCheck::Unchecked);
+
+            context = context
+                .with_signature(signature_check)
+                .with_required_signature(true);
+        }
+
+        Ok(SubmitOrder::new(order, context)
+            .with_rest_on_no_match(self.rest_on_no_match)
+            .with_reservation_ttl_secs(self.reservation_ttl_secs))
     }
 }
 

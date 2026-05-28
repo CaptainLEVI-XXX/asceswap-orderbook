@@ -202,6 +202,21 @@ pub fn parse_address(field: &'static str, value: &str) -> Result<Address, ApiErr
     Ok(Address::from_slice(&bytes))
 }
 
+pub fn parse_hex_bytes(field: &'static str, value: &str) -> Result<Vec<u8>, ApiError> {
+    let raw = value.strip_prefix("0x").ok_or(ApiError::InvalidField {
+        field,
+        reason: "missing 0x prefix",
+    })?;
+    if raw.len() % 2 != 0 {
+        return Err(ApiError::InvalidField {
+            field,
+            reason: "odd hex length",
+        });
+    }
+
+    parse_hex_raw(field, raw)
+}
+
 pub fn parse_u256(field: &'static str, value: &str) -> Result<U256, ApiError> {
     if value.is_empty() {
         return Err(ApiError::InvalidField {
@@ -239,7 +254,11 @@ fn parse_hex_fixed(field: &'static str, value: &str, byte_len: usize) -> Result<
         });
     }
 
-    let mut bytes = Vec::with_capacity(byte_len);
+    parse_hex_raw(field, raw)
+}
+
+fn parse_hex_raw(field: &'static str, raw: &str) -> Result<Vec<u8>, ApiError> {
+    let mut bytes = Vec::with_capacity(raw.len() / 2);
     let raw = raw.as_bytes();
     for index in (0..raw.len()).step_by(2) {
         let high = hex_nibble(raw[index]).ok_or(ApiError::InvalidField {
