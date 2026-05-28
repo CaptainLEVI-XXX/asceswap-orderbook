@@ -2,7 +2,7 @@ use asceswap_engine::AsceSwapEngine;
 use asceswap_matcher::MatchConfig;
 use asceswap_storage::InMemoryEngineStore;
 use asceswap_types::{Address, ClaimSide, Order, Side, B256, U256};
-use asceswap_validation::order_hash;
+use asceswap_validation::{order_hash, SignatureDomain};
 
 use crate::wire::{encode_b256, encode_u256};
 use crate::{
@@ -63,6 +63,7 @@ fn submit_request(order: &Order, now: u64) -> SubmitOrderRequest {
     SubmitOrderRequest {
         order: ApiOrder::from(order),
         validation: validation(order, now),
+        signature_bytes: None,
         rest_on_no_match: true,
         reservation_ttl_secs: Some(10),
     }
@@ -199,4 +200,20 @@ fn rejects_bad_hex_order_hash() {
             reason: "missing 0x prefix",
         }
     );
+}
+
+#[test]
+fn configured_service_requires_wire_signature_bytes() {
+    let mut service = service().with_signature_domain(SignatureDomain::new(
+        U256::from(31_337),
+        Address::repeat_byte(17),
+    ));
+    let order = sell_order(1, 1, 100, 40);
+    let response = service.submit_order(submit_request(&order, 100)).unwrap();
+
+    assert!(matches!(
+        response.outcome,
+        SubmitOrderResponseOutcome::Rejected { reason }
+            if reason == "MissingSignatureVerification"
+    ));
 }

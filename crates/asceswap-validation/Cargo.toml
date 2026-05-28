@@ -9,3 +9,6 @@ rust-version.workspace = true
 alloy-primitives.workspace = true
 asceswap-math.workspace = true
 asceswap-types.workspace = true
+
+[dev-dependencies]
+k256 = "0.13"
