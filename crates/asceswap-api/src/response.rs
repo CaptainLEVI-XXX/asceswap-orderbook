@@ -19,6 +19,7 @@ pub enum SubmitOrderResponseOutcome {
     Rested {
         price_wad: String,
     },
+    PostOnlyWouldCross,
     Inactive,
     Matched {
         reservation_id: String,

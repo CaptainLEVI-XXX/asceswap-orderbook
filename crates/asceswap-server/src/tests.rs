@@ -88,6 +88,7 @@ fn submit_body(order: &Order, now: u64) -> serde_json::Value {
     serde_json::json!({
         "order": ApiOrder::from(order),
         "validation": validation(order, now),
+        "post_only": false,
         "rest_on_no_match": true,
         "reservation_ttl_secs": 10,
     })

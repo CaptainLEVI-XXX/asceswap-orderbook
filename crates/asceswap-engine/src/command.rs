@@ -6,6 +6,7 @@ pub struct SubmitOrder {
     pub order: Order,
     pub validation: OrderValidationContext,
     pub signature: Option<Vec<u8>>,
+    pub post_only: bool,
     pub rest_on_no_match: bool,
     pub reservation_ttl_secs: Option<u64>,
 }
@@ -16,6 +17,7 @@ impl SubmitOrder {
             order,
             validation,
             signature: None,
+            post_only: false,
             rest_on_no_match: true,
             reservation_ttl_secs: None,
         }
@@ -23,6 +25,11 @@ impl SubmitOrder {
 
     pub fn with_signature(mut self, signature: Option<Vec<u8>>) -> Self {
         self.signature = signature;
+        self
+    }
+
+    pub fn with_post_only(mut self, post_only: bool) -> Self {
+        self.post_only = post_only;
         self
     }
 

@@ -234,6 +234,59 @@ fn matched_order_exposes_contract_settlement_payload() {
 }
 
 #[test]
+fn post_only_order_rests_when_it_does_not_cross() {
+    let mut engine = AsceSwapEngine::default();
+    let order = sell_order(1, 1, 100, 40);
+    let order_hash = order_hash(&order);
+
+    let result = engine
+        .submit_order(submit(order, 100).with_post_only(true))
+        .unwrap();
+
+    assert!(matches!(result.outcome, SubmitOrderOutcome::Rested { .. }));
+    assert_eq!(
+        engine.order_record(order_hash).unwrap().state(),
+        OrderState::Open
+    );
+    assert!(engine
+        .market_book(market_id())
+        .unwrap()
+        .contains(order_hash));
+}
+
+#[test]
+fn post_only_order_does_not_take_existing_liquidity() {
+    let mut engine = AsceSwapEngine::default();
+    let maker_order = sell_order(1, 1, 100, 40);
+    let post_only_taker = buy_order(2, 2, 100, 50);
+    let maker_hash = order_hash(&maker_order);
+    let post_only_hash = order_hash(&post_only_taker);
+    engine.submit_order(submit(maker_order, 100)).unwrap();
+
+    let result = engine
+        .submit_order(submit(post_only_taker, 101).with_post_only(true))
+        .unwrap();
+
+    assert_eq!(result.outcome, SubmitOrderOutcome::PostOnlyWouldCross);
+    assert_eq!(
+        engine.order_record(post_only_hash).unwrap().state(),
+        OrderState::Inactive
+    );
+    assert_eq!(
+        engine.order_record(maker_hash).unwrap().state(),
+        OrderState::Open
+    );
+    assert!(engine
+        .market_book(market_id())
+        .unwrap()
+        .contains(maker_hash));
+    assert!(!engine
+        .market_book(market_id())
+        .unwrap()
+        .contains(post_only_hash));
+}
+
+#[test]
 fn submitted_reservation_commit_applies_fills_and_removes_filled_maker() {
     let mut engine = AsceSwapEngine::default();
     let maker_order = rest_maker(&mut engine);

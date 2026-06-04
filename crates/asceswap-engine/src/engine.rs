@@ -215,6 +215,27 @@ impl AsceSwapEngine {
 
         let plan = self.plan_for_submit(&command.order, validated.filled_claim_amount)?;
 
+        if command.post_only && plan.is_some() {
+            lifecycle.transition_to(OrderState::Inactive)?;
+            self.records.insert(
+                order_hash,
+                OrderRecord::new(
+                    order_hash,
+                    command.order,
+                    OrderState::Inactive,
+                    validated.filled_claim_amount,
+                    false,
+                )
+                .with_signature(command.signature),
+            );
+            events.push(EngineEvent::OrderInactive { order_hash });
+            return Ok(SubmitOrderResult {
+                order_hash,
+                outcome: SubmitOrderOutcome::PostOnlyWouldCross,
+                events,
+            });
+        }
+
         if let Some(plan) = plan {
             let settlement = self.settlement_payload_for_plan(
                 &command.order,

@@ -236,6 +236,9 @@ pub(crate) fn submit_outcome_from_engine(
         EngineSubmitOrderOutcome::Rested { price } => SubmitOrderResponseOutcome::Rested {
             price_wad: encode_u256(price.wad()),
         },
+        EngineSubmitOrderOutcome::PostOnlyWouldCross => {
+            SubmitOrderResponseOutcome::PostOnlyWouldCross
+        }
         EngineSubmitOrderOutcome::Inactive => SubmitOrderResponseOutcome::Inactive,
         EngineSubmitOrderOutcome::Matched {
             reservation_id,

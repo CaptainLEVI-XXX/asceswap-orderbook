@@ -65,6 +65,7 @@ fn submit_request(order: &Order, now: u64) -> SubmitOrderRequest {
         order: ApiOrder::from(order),
         validation: validation(order, now),
         signature_bytes: None,
+        post_only: false,
         rest_on_no_match: true,
         reservation_ttl_secs: Some(10),
     }
@@ -77,6 +78,12 @@ fn signature(byte: u8) -> String {
 fn signed_submit_request(order: &Order, now: u64, signature_byte: u8) -> SubmitOrderRequest {
     let mut request = submit_request(order, now);
     request.signature_bytes = Some(signature(signature_byte));
+    request
+}
+
+fn post_only_submit_request(order: &Order, now: u64) -> SubmitOrderRequest {
+    let mut request = submit_request(order, now);
+    request.post_only = true;
     request
 }
 
@@ -201,6 +208,29 @@ fn cancel_order_removes_resting_liquidity() {
         .unwrap();
     assert_eq!(status.state, ApiOrderState::Cancelled);
     assert!(!status.resting);
+}
+
+#[test]
+fn post_only_order_returns_clear_outcome_when_it_would_cross() {
+    let mut service = service();
+    let maker = sell_order(1, 1, 100, 40);
+    let crossing_quote = buy_order(2, 2, 100, 50);
+    service.submit_order(submit_request(&maker, 100)).unwrap();
+
+    let response = service
+        .submit_order(post_only_submit_request(&crossing_quote, 101))
+        .unwrap();
+
+    assert_eq!(
+        response.outcome,
+        SubmitOrderResponseOutcome::PostOnlyWouldCross
+    );
+    let status = service
+        .order_status(OrderStatusRequest {
+            order_hash: encode_b256(order_hash(&crossing_quote)),
+        })
+        .unwrap();
+    assert_eq!(status.state, ApiOrderState::Inactive);
 }
 
 #[test]

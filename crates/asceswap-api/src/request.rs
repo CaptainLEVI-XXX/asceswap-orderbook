@@ -50,6 +50,8 @@ pub struct SubmitOrderRequest {
     pub validation: ValidationContextRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_bytes: Option<String>,
+    #[serde(default)]
+    pub post_only: bool,
     pub rest_on_no_match: bool,
     pub reservation_ttl_secs: Option<u64>,
 }
@@ -91,6 +93,7 @@ impl SubmitOrderRequest {
 
         Ok(SubmitOrder::new(order, context)
             .with_signature(signature)
+            .with_post_only(self.post_only)
             .with_rest_on_no_match(self.rest_on_no_match)
             .with_reservation_ttl_secs(self.reservation_ttl_secs))
     }

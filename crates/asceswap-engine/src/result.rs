@@ -22,6 +22,7 @@ pub enum SubmitOrderOutcome {
     Rested {
         price: Price,
     },
+    PostOnlyWouldCross,
     Inactive,
     Matched {
         reservation_id: ReservationId,
