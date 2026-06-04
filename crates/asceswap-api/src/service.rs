@@ -1,5 +1,5 @@
 use asceswap_engine::{
-    AsceSwapEngine, EngineError, EngineEvent, ReservationUpdateResult,
+    AsceSwapEngine, EngineError, EngineEvent, ReservationUpdateResult, SettlementPayload,
     SubmitOrderOutcome as EngineSubmitOrderOutcome,
 };
 use asceswap_matcher::MatchConfig;
@@ -10,13 +10,14 @@ use asceswap_validation::SignatureDomain;
 use crate::event::ApiEvent;
 use crate::request::{
     CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
-    SubmitOrderRequest,
+    SettlementPayloadRequest, SubmitOrderRequest,
 };
 use crate::response::{
     CancelOrderResponse, DepthLevelResponse, MarketDepthResponse, OrderStatusResponse,
-    ReservationActionResponse, SubmitOrderResponse, SubmitOrderResponseOutcome,
+    ReservationActionResponse, SettlementPayloadResponse, SubmitOrderResponse,
+    SubmitOrderResponseOutcome,
 };
-use crate::wire::{encode_b256, encode_u256, ApiMatchKind};
+use crate::wire::{encode_b256, encode_bytes, encode_u256, ApiMatchKind, ApiOrder};
 use crate::ApiError;
 
 #[derive(Clone, Debug)]
@@ -138,6 +139,15 @@ impl<S: EngineStore> OrderbookApiService<S> {
         self.reservation_response(request.now, result)
     }
 
+    pub fn settlement_payload(
+        &self,
+        request: SettlementPayloadRequest,
+    ) -> Result<SettlementPayloadResponse, ApiError> {
+        Ok(settlement_payload_from_engine(
+            self.engine.settlement_payload(request.reservation_id()?)?,
+        ))
+    }
+
     pub fn order_status(
         &self,
         request: OrderStatusRequest,
@@ -230,12 +240,35 @@ pub(crate) fn submit_outcome_from_engine(
         EngineSubmitOrderOutcome::Matched {
             reservation_id,
             plan,
+            settlement,
         } => SubmitOrderResponseOutcome::Matched {
             reservation_id: encode_b256(reservation_id),
             match_kind: ApiMatchKind::from(plan.match_kind),
             taker_claim_fill_amount: encode_u256(plan.taker_claim_fill_amount),
             maker_count: plan.maker_fills.len(),
+            settlement: settlement.map(settlement_payload_from_engine),
         },
+    }
+}
+
+pub(crate) fn settlement_payload_from_engine(
+    payload: SettlementPayload,
+) -> SettlementPayloadResponse {
+    SettlementPayloadResponse {
+        taker_order: ApiOrder::from(&payload.taker_order),
+        taker_signature: encode_bytes(&payload.taker_signature),
+        maker_orders: payload.maker_orders.iter().map(ApiOrder::from).collect(),
+        maker_signatures: payload
+            .maker_signatures
+            .iter()
+            .map(|signature| encode_bytes(signature))
+            .collect(),
+        taker_claim_fill_amount: encode_u256(payload.taker_claim_fill_amount),
+        maker_claim_fill_amounts: payload
+            .maker_claim_fill_amounts
+            .into_iter()
+            .map(encode_u256)
+            .collect(),
     }
 }
 

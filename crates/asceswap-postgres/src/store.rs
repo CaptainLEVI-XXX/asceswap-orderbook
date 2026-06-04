@@ -23,11 +23,11 @@ pub const POSTGRES_SCHEMA: &str = include_str!("../../asceswap-storage/schema/po
 const UPSERT_ORDER_SQL: &str = r#"
 INSERT INTO orders (
     order_hash, salt, maker, market_id, claim_side, maker_amount, taker_amount,
-    side, expiration, epoch, max_fee_rate_bps, order_state,
+    side, expiration, epoch, max_fee_rate_bps, signature_bytes, order_state,
     filled_claim_amount, resting, accepted_sequence, created_at, updated_at
 ) VALUES (
     $1, $2::numeric, $3, $4, $5, $6::numeric, $7::numeric,
-    $8, $9::numeric, $10::numeric, $11, $12, $13::numeric, $14, $15, $16, $17
+    $8, $9::numeric, $10::numeric, $11, $12, $13, $14::numeric, $15, $16, $17, $18
 )
 ON CONFLICT (order_hash) DO UPDATE SET
     salt = EXCLUDED.salt,
@@ -40,6 +40,7 @@ ON CONFLICT (order_hash) DO UPDATE SET
     expiration = EXCLUDED.expiration,
     epoch = EXCLUDED.epoch,
     max_fee_rate_bps = EXCLUDED.max_fee_rate_bps,
+    signature_bytes = EXCLUDED.signature_bytes,
     order_state = EXCLUDED.order_state,
     filled_claim_amount = EXCLUDED.filled_claim_amount,
     resting = EXCLUDED.resting,
@@ -85,7 +86,7 @@ const SELECT_ORDERS_SQL: &str = r#"
 SELECT
     order_hash, salt::text, maker, market_id, claim_side, maker_amount::text,
     taker_amount::text, side, expiration::text, epoch::text, max_fee_rate_bps,
-    order_state, filled_claim_amount::text, resting, accepted_sequence, created_at, updated_at
+    signature_bytes, order_state, filled_claim_amount::text, resting, accepted_sequence, created_at, updated_at
 FROM orders
 ORDER BY order_hash
 "#;
@@ -408,6 +409,7 @@ fn write_order(client: &mut impl GenericClient, order: StoredOrder) -> Result<()
     let expiration = u256_to_string(inner.expiration);
     let epoch = u256_to_string(inner.epoch);
     let max_fee_rate_bps = i32::from(inner.max_fee_rate_bps);
+    let signature = snapshot.signature;
     let order_state = order_state_to_str(snapshot.state);
     let filled_claim_amount = u256_to_string(snapshot.filled_claim_amount);
     let accepted_sequence = snapshot
@@ -432,6 +434,7 @@ fn write_order(client: &mut impl GenericClient, order: StoredOrder) -> Result<()
                 &expiration,
                 &epoch,
                 &max_fee_rate_bps,
+                &signature,
                 &order_state,
                 &filled_claim_amount,
                 &snapshot.resting,
@@ -589,23 +592,25 @@ fn order_from_row(row: Row) -> Result<StoredOrder, StorageError> {
         epoch: u256_from_string("orders.epoch", row.get::<_, String>(9).as_str())?,
         max_fee_rate_bps: i32_to_u16("orders.max_fee_rate_bps", row.get(10))?,
     };
-    let state = order_state_from_str(row.get::<_, String>(11).as_str())?;
+    let signature = row.get::<_, Option<Vec<u8>>>(11);
+    let state = order_state_from_str(row.get::<_, String>(12).as_str())?;
     let filled_claim_amount = u256_from_string(
         "orders.filled_claim_amount",
-        row.get::<_, String>(12).as_str(),
+        row.get::<_, String>(13).as_str(),
     )?;
-    let resting = row.get(13);
+    let resting = row.get(14);
     let accepted_sequence = row
-        .get::<_, Option<i64>>(14)
+        .get::<_, Option<i64>>(15)
         .map(|sequence| i64_to_u64("orders.accepted_sequence", sequence))
         .transpose()?;
-    let created_at = i64_to_u64("orders.created_at", row.get(15))?;
-    let updated_at = i64_to_u64("orders.updated_at", row.get(16))?;
+    let created_at = i64_to_u64("orders.created_at", row.get(16))?;
+    let updated_at = i64_to_u64("orders.updated_at", row.get(17))?;
 
     Ok(StoredOrder {
         snapshot: OrderSnapshot {
             hash,
             order,
+            signature,
             state,
             filled_claim_amount,
             resting,

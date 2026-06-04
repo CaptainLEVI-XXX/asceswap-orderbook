@@ -65,13 +65,13 @@ impl SubmitOrderRequest {
     ) -> Result<SubmitOrder, ApiError> {
         let order = self.order.to_order()?;
         let mut context = self.validation.to_context()?;
+        let signature = self
+            .signature_bytes
+            .as_deref()
+            .map(|value| parse_hex_bytes("signature_bytes", value))
+            .transpose()?;
 
         if let Some(domain) = signature_domain {
-            let signature = self
-                .signature_bytes
-                .as_deref()
-                .map(|value| parse_hex_bytes("signature_bytes", value))
-                .transpose()?;
             let signature_check = signature
                 .as_deref()
                 .map(|signature| verify_order_eoa_signature(&order, domain, signature))
@@ -90,6 +90,7 @@ impl SubmitOrderRequest {
         }
 
         Ok(SubmitOrder::new(order, context)
+            .with_signature(signature)
             .with_rest_on_no_match(self.rest_on_no_match)
             .with_reservation_ttl_secs(self.reservation_ttl_secs))
     }
@@ -117,6 +118,17 @@ pub struct ReservationActionRequest {
 }
 
 impl ReservationActionRequest {
+    pub fn reservation_id(&self) -> Result<asceswap_state::ReservationId, ApiError> {
+        parse_b256("reservation_id", &self.reservation_id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettlementPayloadRequest {
+    pub reservation_id: String,
+}
+
+impl SettlementPayloadRequest {
     pub fn reservation_id(&self) -> Result<asceswap_state::ReservationId, ApiError> {
         parse_b256("reservation_id", &self.reservation_id)
     }

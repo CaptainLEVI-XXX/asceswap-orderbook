@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use asceswap_engine::{
     AsceSwapEngine, CancelOrder, CancelOrderResult, EngineError, EngineSnapshot, OrderRecord,
-    OrderSnapshot, ReservationUpdateResult, SubmitOrder, SubmitOrderOutcome, SubmitOrderResult,
+    OrderSnapshot, ReservationUpdateResult, SettlementPayload, SubmitOrder, SubmitOrderOutcome,
+    SubmitOrderResult,
 };
 use asceswap_matcher::MatchConfig;
 use asceswap_orderbook::DepthLevel;
@@ -167,6 +168,15 @@ impl MarketActorRouter {
     ) -> Result<Option<Reservation>, MarketActorError> {
         self.reservation_actor(reservation_id)?
             .reservation(reservation_id)
+            .await
+    }
+
+    pub async fn settlement_payload(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<SettlementPayload, MarketActorError> {
+        self.reservation_actor(reservation_id)?
+            .settlement_payload(reservation_id)
             .await
     }
 
@@ -356,6 +366,17 @@ impl MarketActorHandle {
         .await
     }
 
+    pub async fn settlement_payload(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<SettlementPayload, MarketActorError> {
+        self.request(|respond_to| MarketActorMessage::SettlementPayload {
+            reservation_id,
+            respond_to,
+        })
+        .await
+    }
+
     pub async fn depth(
         &self,
         claim: ClaimSide,
@@ -498,6 +519,15 @@ impl MarketActor {
                 respond_to,
                 Ok(self.engine.reservation(reservation_id).cloned()),
             ),
+            MarketActorMessage::SettlementPayload {
+                reservation_id,
+                respond_to,
+            } => send_response(
+                respond_to,
+                self.engine
+                    .settlement_payload(reservation_id)
+                    .map_err(Into::into),
+            ),
             MarketActorMessage::Depth {
                 claim,
                 side,
@@ -564,6 +594,10 @@ enum MarketActorMessage {
     Reservation {
         reservation_id: ReservationId,
         respond_to: oneshot::Sender<Result<Option<Reservation>, MarketActorError>>,
+    },
+    SettlementPayload {
+        reservation_id: ReservationId,
+        respond_to: oneshot::Sender<Result<SettlementPayload, MarketActorError>>,
     },
     Depth {
         claim: ClaimSide,

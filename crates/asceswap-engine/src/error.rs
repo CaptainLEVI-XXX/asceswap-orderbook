@@ -16,6 +16,8 @@ pub enum EngineError {
         order_hash: OrderHash,
         state: OrderState,
     },
+    MissingOrderSignature(OrderHash),
+    InvalidReservationForSettlement(ReservationId),
     SnapshotOrderHashMismatch {
         expected: OrderHash,
         actual: OrderHash,

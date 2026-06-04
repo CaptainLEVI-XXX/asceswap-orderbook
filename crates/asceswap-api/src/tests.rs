@@ -9,7 +9,8 @@ use crate::{
     spawn_actor_orderbook_api_service_with_capacity, ActorOrderbookApiService, ApiClaimSide,
     ApiError, ApiOrder, ApiOrderState, ApiSide, ApiSignatureCheck, CancelOrderRequest,
     MarketDepthRequest, OrderStatusRequest, OrderbookApiService, ReservationActionRequest,
-    SubmitOrderRequest, SubmitOrderResponseOutcome, ValidationContextRequest,
+    SettlementPayloadRequest, SubmitOrderRequest, SubmitOrderResponseOutcome,
+    ValidationContextRequest,
 };
 
 fn market_id() -> B256 {
@@ -69,6 +70,16 @@ fn submit_request(order: &Order, now: u64) -> SubmitOrderRequest {
     }
 }
 
+fn signature(byte: u8) -> String {
+    format!("0x{}", format!("{byte:02x}").repeat(65))
+}
+
+fn signed_submit_request(order: &Order, now: u64, signature_byte: u8) -> SubmitOrderRequest {
+    let mut request = submit_request(order, now);
+    request.signature_bytes = Some(signature(signature_byte));
+    request
+}
+
 fn service() -> OrderbookApiService<InMemoryEngineStore> {
     OrderbookApiService::new(AsceSwapEngine::default(), InMemoryEngineStore::new())
 }
@@ -119,13 +130,34 @@ fn crossed_order_can_be_submitted_and_committed_through_api() {
     let mut service = service();
     let maker = sell_order(1, 1, 100, 40);
     let taker = buy_order(2, 2, 100, 50);
-    service.submit_order(submit_request(&maker, 100)).unwrap();
+    service
+        .submit_order(signed_submit_request(&maker, 100, 1))
+        .unwrap();
 
-    let taker_response = service.submit_order(submit_request(&taker, 101)).unwrap();
-    let reservation_id = match taker_response.outcome {
-        SubmitOrderResponseOutcome::Matched { reservation_id, .. } => reservation_id,
+    let taker_response = service
+        .submit_order(signed_submit_request(&taker, 101, 2))
+        .unwrap();
+    let (reservation_id, settlement) = match taker_response.outcome {
+        SubmitOrderResponseOutcome::Matched {
+            reservation_id,
+            settlement: Some(settlement),
+            ..
+        } => (reservation_id, settlement),
         other => panic!("expected matched outcome, got {other:?}"),
     };
+    assert_eq!(settlement.taker_order, ApiOrder::from(&taker));
+    assert_eq!(settlement.taker_signature, signature(2));
+    assert_eq!(settlement.maker_orders, vec![ApiOrder::from(&maker)]);
+    assert_eq!(settlement.maker_signatures, vec![signature(1)]);
+    assert_eq!(settlement.taker_claim_fill_amount, "100");
+    assert_eq!(settlement.maker_claim_fill_amounts, vec!["100".to_string()]);
+
+    let fetched_settlement = service
+        .settlement_payload(SettlementPayloadRequest {
+            reservation_id: reservation_id.clone(),
+        })
+        .unwrap();
+    assert_eq!(fetched_settlement, settlement);
 
     service
         .mark_reservation_submitted(ReservationActionRequest {
@@ -278,18 +310,33 @@ async fn actor_service_matches_and_commits_reservation() {
     let maker = sell_order(1, 1, 100, 40);
     let taker = buy_order(2, 2, 100, 50);
     service
-        .submit_order(submit_request(&maker, 100))
+        .submit_order(signed_submit_request(&maker, 100, 1))
         .await
         .unwrap();
 
     let taker_response = service
-        .submit_order(submit_request(&taker, 101))
+        .submit_order(signed_submit_request(&taker, 101, 2))
         .await
         .unwrap();
-    let reservation_id = match taker_response.outcome {
-        SubmitOrderResponseOutcome::Matched { reservation_id, .. } => reservation_id,
+    let (reservation_id, settlement) = match taker_response.outcome {
+        SubmitOrderResponseOutcome::Matched {
+            reservation_id,
+            settlement: Some(settlement),
+            ..
+        } => (reservation_id, settlement),
         other => panic!("expected matched outcome, got {other:?}"),
     };
+    assert_eq!(settlement.taker_signature, signature(2));
+    assert_eq!(settlement.maker_signatures, vec![signature(1)]);
+    assert_eq!(
+        service
+            .settlement_payload(SettlementPayloadRequest {
+                reservation_id: reservation_id.clone(),
+            })
+            .await
+            .unwrap(),
+        settlement
+    );
 
     service
         .mark_reservation_submitted(ReservationActionRequest {

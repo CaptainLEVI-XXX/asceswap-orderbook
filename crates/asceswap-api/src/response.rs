@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::event::ApiEvent;
-use crate::wire::{ApiClaimSide, ApiMatchKind, ApiOrderState, ApiSide};
+use crate::wire::{ApiClaimSide, ApiMatchKind, ApiOrder, ApiOrderState, ApiSide};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitOrderResponse {
@@ -25,7 +25,19 @@ pub enum SubmitOrderResponseOutcome {
         match_kind: ApiMatchKind,
         taker_claim_fill_amount: String,
         maker_count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        settlement: Option<SettlementPayloadResponse>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettlementPayloadResponse {
+    pub taker_order: ApiOrder,
+    pub taker_signature: String,
+    pub maker_orders: Vec<ApiOrder>,
+    pub maker_signatures: Vec<String>,
+    pub taker_claim_fill_amount: String,
+    pub maker_claim_fill_amounts: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

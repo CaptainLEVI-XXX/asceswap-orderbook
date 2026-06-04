@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS orders (
     expiration NUMERIC(78, 0) NOT NULL,
     epoch NUMERIC(78, 0) NOT NULL,
     max_fee_rate_bps INTEGER NOT NULL CHECK (max_fee_rate_bps BETWEEN 0 AND 65535),
+    signature_bytes BYTEA,
     order_state TEXT NOT NULL,
     filled_claim_amount NUMERIC(78, 0) NOT NULL,
     resting BOOLEAN NOT NULL,
@@ -21,6 +22,8 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL
 );
+
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS signature_bytes BYTEA;
 
 CREATE INDEX IF NOT EXISTS orders_market_state_idx ON orders (market_id, order_state);
 CREATE INDEX IF NOT EXISTS orders_maker_idx ON orders (maker);

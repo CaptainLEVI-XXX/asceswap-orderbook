@@ -188,6 +188,10 @@ pub fn encode_address(value: Address) -> String {
     encode_hex(value.as_slice())
 }
 
+pub fn encode_bytes(value: &[u8]) -> String {
+    encode_hex(value)
+}
+
 pub fn encode_u256(value: U256) -> String {
     value.to_string()
 }

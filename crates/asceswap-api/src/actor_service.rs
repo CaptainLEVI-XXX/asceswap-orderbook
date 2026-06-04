@@ -8,13 +8,13 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::request::{
     CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
-    SubmitOrderRequest,
+    SettlementPayloadRequest, SubmitOrderRequest,
 };
 use crate::response::{
     CancelOrderResponse, DepthLevelResponse, MarketDepthResponse, OrderStatusResponse,
-    ReservationActionResponse, SubmitOrderResponse,
+    ReservationActionResponse, SettlementPayloadResponse, SubmitOrderResponse,
 };
-use crate::service::{project_events, submit_outcome_from_engine};
+use crate::service::{project_events, settlement_payload_from_engine, submit_outcome_from_engine};
 use crate::wire::{encode_b256, encode_u256};
 use crate::{ApiError, ApiEvent};
 
@@ -96,6 +96,17 @@ impl ActorOrderbookApiHandle {
         request: ReservationActionRequest,
     ) -> Result<ReservationActionResponse, ApiError> {
         self.request(|respond_to| ActorOrderbookApiMessage::CommitReservation {
+            request,
+            respond_to,
+        })
+        .await
+    }
+
+    pub async fn settlement_payload(
+        &self,
+        request: SettlementPayloadRequest,
+    ) -> Result<SettlementPayloadResponse, ApiError> {
+        self.request(|respond_to| ActorOrderbookApiMessage::SettlementPayload {
             request,
             respond_to,
         })
@@ -199,6 +210,10 @@ enum ActorOrderbookApiMessage {
         request: ReservationActionRequest,
         respond_to: oneshot::Sender<Result<ReservationActionResponse, ApiError>>,
     },
+    SettlementPayload {
+        request: SettlementPayloadRequest,
+        respond_to: oneshot::Sender<Result<SettlementPayloadResponse, ApiError>>,
+    },
     OrderStatus {
         request: OrderStatusRequest,
         respond_to: oneshot::Sender<Result<OrderStatusResponse, ApiError>>,
@@ -244,6 +259,10 @@ async fn run_actor_orderbook_api_service<S>(
                 request,
                 respond_to,
             } => send_response(respond_to, service.commit_reservation(request).await),
+            ActorOrderbookApiMessage::SettlementPayload {
+                request,
+                respond_to,
+            } => send_response(respond_to, service.settlement_payload(request).await),
             ActorOrderbookApiMessage::OrderStatus {
                 request,
                 respond_to,
@@ -403,6 +422,17 @@ impl<S: EngineStore> ActorOrderbookApiService<S> {
             .commit_reservation(request.reservation_id()?)
             .await?;
         self.reservation_response(request.now, result).await
+    }
+
+    pub async fn settlement_payload(
+        &mut self,
+        request: SettlementPayloadRequest,
+    ) -> Result<SettlementPayloadResponse, ApiError> {
+        Ok(settlement_payload_from_engine(
+            self.router
+                .settlement_payload(request.reservation_id()?)
+                .await?,
+        ))
     }
 
     pub async fn order_status(

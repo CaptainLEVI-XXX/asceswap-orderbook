@@ -5,6 +5,7 @@ use asceswap_types::{Order, OrderHash, U256};
 pub struct OrderSnapshot {
     pub hash: OrderHash,
     pub order: Order,
+    pub signature: Option<Vec<u8>>,
     pub state: OrderState,
     pub filled_claim_amount: U256,
     pub resting: bool,

@@ -58,6 +58,10 @@ fn submit(order: Order, now: u64) -> SubmitOrder {
     SubmitOrder::new(order.clone(), validation(&order, now))
 }
 
+fn signed_submit(order: Order, now: u64, signature_byte: u8) -> SubmitOrder {
+    submit(order, now).with_signature(Some(vec![signature_byte; 65]))
+}
+
 fn rest_maker(engine: &mut AsceSwapEngine) -> Order {
     let maker_order = sell_order(1, 1, 100, 40);
     let result = engine
@@ -127,6 +131,7 @@ fn crossed_order_creates_reservation_and_marks_orders_reserved() {
         SubmitOrderOutcome::Matched {
             reservation_id,
             plan,
+            ..
         } => {
             assert_eq!(plan.maker_fills.len(), 1);
             reservation_id
@@ -188,6 +193,43 @@ fn reserved_maker_is_skipped_for_next_taker() {
     assert_eq!(
         engine.order_record(second_maker_hash).unwrap().state(),
         OrderState::Reserved
+    );
+}
+
+#[test]
+fn matched_order_exposes_contract_settlement_payload() {
+    let mut engine = AsceSwapEngine::default();
+    let maker_order = sell_order(1, 1, 100, 40);
+    let taker_order = buy_order(2, 2, 100, 50);
+    let maker_hash = order_hash(&maker_order);
+    engine
+        .submit_order(signed_submit(maker_order.clone(), 100, 1))
+        .unwrap();
+
+    let result = engine
+        .submit_order(signed_submit(taker_order.clone(), 101, 2))
+        .unwrap();
+
+    let (reservation_id, settlement) = match result.outcome {
+        SubmitOrderOutcome::Matched {
+            reservation_id,
+            settlement: Some(settlement),
+            ..
+        } => (reservation_id, settlement),
+        other => panic!("expected settlement payload, got {other:?}"),
+    };
+    assert_eq!(settlement.taker_order, taker_order);
+    assert_eq!(settlement.taker_signature, vec![2; 65]);
+    assert_eq!(settlement.maker_orders, vec![maker_order]);
+    assert_eq!(settlement.maker_signatures, vec![vec![1; 65]]);
+    assert_eq!(settlement.taker_claim_fill_amount, U256::from(100));
+    assert_eq!(settlement.maker_claim_fill_amounts, vec![U256::from(100)]);
+
+    let fetched = engine.settlement_payload(reservation_id).unwrap();
+    assert_eq!(fetched, settlement);
+    assert_eq!(
+        engine.order_record(maker_hash).unwrap().signature,
+        Some(vec![1; 65])
     );
 }
 

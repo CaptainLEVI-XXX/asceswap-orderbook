@@ -7,6 +7,7 @@ use crate::EngineError;
 pub struct OrderRecord {
     pub hash: OrderHash,
     pub order: Order,
+    pub signature: Option<Vec<u8>>,
     lifecycle: OrderLifecycle,
     pub filled_claim_amount: U256,
     pub resting: bool,
@@ -23,10 +24,16 @@ impl OrderRecord {
         Self {
             hash,
             order,
+            signature: None,
             lifecycle: OrderLifecycle::new(state),
             filled_claim_amount,
             resting,
         }
+    }
+
+    pub fn with_signature(mut self, signature: Option<Vec<u8>>) -> Self {
+        self.signature = signature;
+        self
     }
 
     pub fn state(&self) -> OrderState {

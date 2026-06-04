@@ -14,11 +14,12 @@ pub use error::ApiError;
 pub use event::{ApiEvent, ApiEventKind};
 pub use request::{
     CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
-    SubmitOrderRequest, ValidationContextRequest,
+    SettlementPayloadRequest, SubmitOrderRequest, ValidationContextRequest,
 };
 pub use response::{
     CancelOrderResponse, DepthLevelResponse, MarketDepthResponse, OrderStatusResponse,
-    ReservationActionResponse, SubmitOrderResponse, SubmitOrderResponseOutcome,
+    ReservationActionResponse, SettlementPayloadResponse, SubmitOrderResponse,
+    SubmitOrderResponseOutcome,
 };
 pub use service::OrderbookApiService;
 pub use wire::{ApiClaimSide, ApiMatchKind, ApiOrder, ApiOrderState, ApiSide, ApiSignatureCheck};

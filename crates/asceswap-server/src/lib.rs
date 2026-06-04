@@ -3,7 +3,8 @@ use std::sync::Arc;
 use asceswap_api::{
     ActorOrderbookApiHandle, ApiClaimSide, ApiError, ApiEvent, ApiSide, CancelOrderRequest,
     MarketDepthRequest, OrderStatusRequest, OrderbookApiService, ReservationActionRequest,
-    ReservationActionResponse, SubmitOrderRequest,
+    ReservationActionResponse, SettlementPayloadRequest, SettlementPayloadResponse,
+    SubmitOrderRequest,
 };
 use asceswap_storage::EngineStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -100,6 +101,10 @@ where
             "/reservations/:reservation_id/commit",
             post(commit_reservation::<S>),
         )
+        .route(
+            "/reservations/:reservation_id/settlement",
+            get(settlement_payload::<S>),
+        )
         .route("/ws", get(websocket::<S>))
         .with_state(state)
 }
@@ -130,6 +135,10 @@ pub fn actor_router_from_state(state: ActorServerState) -> Router {
         .route(
             "/reservations/:reservation_id/commit",
             post(actor_commit_reservation),
+        )
+        .route(
+            "/reservations/:reservation_id/settlement",
+            get(actor_settlement_payload),
         )
         .route("/ws", get(actor_websocket))
         .with_state(state)
@@ -231,6 +240,18 @@ async fn actor_market_depth(
     ))
 }
 
+async fn actor_settlement_payload(
+    State(state): State<ActorServerState>,
+    Path(reservation_id): Path<String>,
+) -> Result<Json<SettlementPayloadResponse>, ServerError> {
+    Ok(Json(
+        state
+            .service
+            .settlement_payload(SettlementPayloadRequest { reservation_id })
+            .await?,
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 struct DepthQuery {
     claim: ApiClaimSide,
@@ -251,6 +272,19 @@ where
         claim: query.claim,
         side: query.side,
     })?))
+}
+
+async fn settlement_payload<S>(
+    State(state): State<ServerState<S>>,
+    Path(reservation_id): Path<String>,
+) -> Result<Json<SettlementPayloadResponse>, ServerError>
+where
+    S: EngineStore + Send + 'static,
+{
+    let service = state.service.lock().await;
+    Ok(Json(service.settlement_payload(
+        SettlementPayloadRequest { reservation_id },
+    )?))
 }
 
 #[derive(Debug, Deserialize)]

@@ -4,6 +4,7 @@ mod error;
 mod event;
 mod record;
 mod result;
+mod settlement;
 mod snapshot;
 
 pub use command::{CancelOrder, SubmitOrder};
@@ -14,6 +15,7 @@ pub use record::OrderRecord;
 pub use result::{
     CancelOrderResult, ReservationUpdateResult, SubmitOrderOutcome, SubmitOrderResult,
 };
+pub use settlement::SettlementPayload;
 pub use snapshot::{EngineSnapshot, OrderSnapshot};
 
 #[cfg(test)]

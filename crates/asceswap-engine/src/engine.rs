@@ -5,14 +5,15 @@ use asceswap_math::{prepare_fill, remaining_claim_amount};
 use asceswap_orderbook::MarketOrderBook;
 use asceswap_state::{
     derive_reservation_id, OrderAvailability, OrderLifecycle, OrderState, Reservation,
-    ReservationBook, ReservationId, ReservationLeg, ReservationStatus, StateError,
+    ReservationBook, ReservationId, ReservationLeg, ReservationLegRole, ReservationStatus,
+    StateError,
 };
 use asceswap_types::{MarketId, Order, OrderHash, U256};
 use asceswap_validation::{order_hash, validate_order};
 
 use crate::{
     CancelOrder, CancelOrderResult, EngineError, EngineEvent, OrderRecord, ReservationUpdateResult,
-    SubmitOrder, SubmitOrderOutcome, SubmitOrderResult,
+    SettlementPayload, SubmitOrder, SubmitOrderOutcome, SubmitOrderResult,
 };
 use crate::{EngineSnapshot, OrderSnapshot};
 
@@ -61,6 +62,7 @@ impl AsceSwapEngine {
             .map(|record| OrderSnapshot {
                 hash: record.hash,
                 order: record.order.clone(),
+                signature: record.signature.clone(),
                 state: record.state(),
                 filled_claim_amount: record.filled_claim_amount,
                 resting: record.resting,
@@ -133,7 +135,8 @@ impl AsceSwapEngine {
                     order.state,
                     order.filled_claim_amount,
                     order.resting,
-                ),
+                )
+                .with_signature(order.signature),
             );
         }
 
@@ -193,7 +196,8 @@ impl AsceSwapEngine {
                         OrderState::Rejected,
                         command.validation.filled_claim_amount,
                         false,
-                    ),
+                    )
+                    .with_signature(command.signature),
                 );
                 events.push(EngineEvent::OrderRejected { order_hash, reason });
                 return Ok(SubmitOrderResult {
@@ -209,22 +213,14 @@ impl AsceSwapEngine {
             remaining_claim_amount: validated.remaining_claim_amount,
         });
 
-        let unavailable_maker_hashes = self.unavailable_maker_hashes();
-        let plan = {
-            let book = self
-                .books
-                .entry(market_id)
-                .or_insert_with(|| MarketOrderBook::new(market_id));
-            plan_match_with_filter(
-                book,
-                &command.order,
-                validated.filled_claim_amount,
-                self.match_config,
-                |maker| !unavailable_maker_hashes.contains(&maker.hash),
-            )?
-        };
+        let plan = self.plan_for_submit(&command.order, validated.filled_claim_amount)?;
 
         if let Some(plan) = plan {
+            let settlement = self.settlement_payload_for_plan(
+                &command.order,
+                command.signature.as_deref(),
+                &plan,
+            );
             self.ensure_plan_makers_reservable(&plan)?;
             let reservation_id = self.create_reservation(
                 order_hash,
@@ -244,7 +240,8 @@ impl AsceSwapEngine {
                     OrderState::Reserved,
                     validated.filled_claim_amount,
                     false,
-                ),
+                )
+                .with_signature(command.signature),
             );
 
             events.push(EngineEvent::OrderReserved {
@@ -273,6 +270,7 @@ impl AsceSwapEngine {
                 outcome: SubmitOrderOutcome::Matched {
                     reservation_id,
                     plan,
+                    settlement,
                 },
                 events,
             });
@@ -288,7 +286,8 @@ impl AsceSwapEngine {
                     OrderState::Inactive,
                     validated.filled_claim_amount,
                     false,
-                ),
+                )
+                .with_signature(command.signature),
             );
             events.push(EngineEvent::OrderInactive { order_hash });
             return Ok(SubmitOrderResult {
@@ -312,7 +311,8 @@ impl AsceSwapEngine {
                 OrderState::Open,
                 validated.filled_claim_amount,
                 true,
-            ),
+            )
+            .with_signature(command.signature),
         );
         events.push(EngineEvent::OrderOpened { order_hash });
 
@@ -505,6 +505,58 @@ impl AsceSwapEngine {
         })
     }
 
+    pub fn settlement_payload(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<SettlementPayload, EngineError> {
+        let reservation = self
+            .reservations
+            .get(reservation_id)
+            .ok_or(EngineError::State(StateError::MissingReservation(
+                reservation_id,
+            )))?;
+
+        let mut taker = None;
+        let mut makers = Vec::new();
+        for leg in &reservation.legs {
+            match leg.role {
+                ReservationLegRole::Taker => taker = Some(leg),
+                ReservationLegRole::Maker => makers.push(leg),
+            }
+        }
+
+        let taker = taker.ok_or(EngineError::InvalidReservationForSettlement(reservation_id))?;
+        let taker_record = self.record(taker.order_hash)?;
+        let taker_signature = taker_record
+            .signature
+            .clone()
+            .ok_or(EngineError::MissingOrderSignature(taker.order_hash))?;
+
+        let mut maker_orders = Vec::with_capacity(makers.len());
+        let mut maker_signatures = Vec::with_capacity(makers.len());
+        let mut maker_claim_fill_amounts = Vec::with_capacity(makers.len());
+        for maker in makers {
+            let record = self.record(maker.order_hash)?;
+            maker_orders.push(record.order.clone());
+            maker_signatures.push(
+                record
+                    .signature
+                    .clone()
+                    .ok_or(EngineError::MissingOrderSignature(maker.order_hash))?,
+            );
+            maker_claim_fill_amounts.push(maker.claim_amount);
+        }
+
+        Ok(SettlementPayload {
+            taker_order: taker_record.order.clone(),
+            taker_signature,
+            maker_orders,
+            maker_signatures,
+            taker_claim_fill_amount: taker.claim_amount,
+            maker_claim_fill_amounts,
+        })
+    }
+
     fn create_reservation(
         &mut self,
         taker_order_hash: OrderHash,
@@ -589,6 +641,52 @@ impl AsceSwapEngine {
         }
 
         Ok(())
+    }
+
+    fn plan_for_submit(
+        &mut self,
+        order: &Order,
+        filled_claim_amount: U256,
+    ) -> Result<Option<MatchPlan>, EngineError> {
+        let unavailable_maker_hashes = self.unavailable_maker_hashes();
+        let book = self
+            .books
+            .entry(order.market_id)
+            .or_insert_with(|| MarketOrderBook::new(order.market_id));
+        Ok(plan_match_with_filter(
+            book,
+            order,
+            filled_claim_amount,
+            self.match_config,
+            |maker| !unavailable_maker_hashes.contains(&maker.hash),
+        )?)
+    }
+
+    fn settlement_payload_for_plan(
+        &self,
+        taker_order: &Order,
+        taker_signature: Option<&[u8]>,
+        plan: &MatchPlan,
+    ) -> Option<SettlementPayload> {
+        let mut maker_orders = Vec::with_capacity(plan.maker_fills.len());
+        let mut maker_signatures = Vec::with_capacity(plan.maker_fills.len());
+        let mut maker_claim_fill_amounts = Vec::with_capacity(plan.maker_fills.len());
+
+        for maker_fill in &plan.maker_fills {
+            let record = self.records.get(&maker_fill.order_hash)?;
+            maker_orders.push(record.order.clone());
+            maker_signatures.push(record.signature.clone()?);
+            maker_claim_fill_amounts.push(maker_fill.claim_fill_amount);
+        }
+
+        Some(SettlementPayload {
+            taker_order: taker_order.clone(),
+            taker_signature: taker_signature?.to_vec(),
+            maker_orders,
+            maker_signatures,
+            taker_claim_fill_amount: plan.taker_claim_fill_amount,
+            maker_claim_fill_amounts,
+        })
     }
 
     fn unavailable_maker_hashes(&self) -> HashSet<OrderHash> {

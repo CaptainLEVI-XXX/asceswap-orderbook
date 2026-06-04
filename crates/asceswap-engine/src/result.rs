@@ -5,6 +5,7 @@ use asceswap_types::OrderHash;
 use asceswap_validation::ValidationError;
 
 use crate::EngineEvent;
+use crate::SettlementPayload;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubmitOrderResult {
@@ -25,6 +26,7 @@ pub enum SubmitOrderOutcome {
     Matched {
         reservation_id: ReservationId,
         plan: MatchPlan,
+        settlement: Option<SettlementPayload>,
     },
 }
 

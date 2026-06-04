@@ -52,6 +52,10 @@ fn submit(order: Order, now: u64) -> SubmitOrder {
     SubmitOrder::new(order.clone(), validation(&order, now))
 }
 
+fn signed_submit(order: Order, now: u64, signature_byte: u8) -> SubmitOrder {
+    submit(order, now).with_signature(Some(vec![signature_byte; 65]))
+}
+
 fn matched_engine() -> (AsceSwapEngine, B256, B256, B256) {
     let mut engine = AsceSwapEngine::default();
     let maker_order = sell_order(1, 1, 100, 40);
@@ -59,9 +63,11 @@ fn matched_engine() -> (AsceSwapEngine, B256, B256, B256) {
     let maker_hash = order_hash(&maker_order);
     let taker_hash = order_hash(&taker_order);
 
-    engine.submit_order(submit(maker_order, 100)).unwrap();
+    engine
+        .submit_order(signed_submit(maker_order, 100, 1))
+        .unwrap();
     let result = engine
-        .submit_order(submit(taker_order, 101).with_reservation_ttl_secs(Some(10)))
+        .submit_order(signed_submit(taker_order, 101, 2).with_reservation_ttl_secs(Some(10)))
         .unwrap();
     let reservation_id = match result.outcome {
         SubmitOrderOutcome::Matched { reservation_id, .. } => reservation_id,
@@ -86,6 +92,10 @@ fn persists_snapshot_and_recovers_engine() {
     assert_eq!(
         recovered.order_record(maker_hash).unwrap().state(),
         OrderState::Reserved
+    );
+    assert_eq!(
+        recovered.order_record(maker_hash).unwrap().signature,
+        Some(vec![1; 65])
     );
     assert_eq!(
         recovered.order_record(taker_hash).unwrap().state(),

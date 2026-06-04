@@ -5,6 +5,7 @@ use asceswap_validation::OrderValidationContext;
 pub struct SubmitOrder {
     pub order: Order,
     pub validation: OrderValidationContext,
+    pub signature: Option<Vec<u8>>,
     pub rest_on_no_match: bool,
     pub reservation_ttl_secs: Option<u64>,
 }
@@ -14,9 +15,15 @@ impl SubmitOrder {
         Self {
             order,
             validation,
+            signature: None,
             rest_on_no_match: true,
             reservation_ttl_secs: None,
         }
+    }
+
+    pub fn with_signature(mut self, signature: Option<Vec<u8>>) -> Self {
+        self.signature = signature;
+        self
     }
 
     pub fn with_rest_on_no_match(mut self, rest_on_no_match: bool) -> Self {

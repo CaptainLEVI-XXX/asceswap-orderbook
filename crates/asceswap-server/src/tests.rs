@@ -1,7 +1,7 @@
 use asceswap_api::{
     spawn_actor_orderbook_api_service_with_capacity, ActorOrderbookApiService, ApiClaimSide,
     ApiOrder, ApiSide, ApiSignatureCheck, OrderbookApiService, SubmitOrderResponse,
-    ValidationContextRequest,
+    SubmitOrderResponseOutcome, ValidationContextRequest,
 };
 use asceswap_engine::AsceSwapEngine;
 use asceswap_matcher::MatchConfig;
@@ -44,6 +44,21 @@ fn sell_order(salt: u64, maker: u8, claim_amount: u64, collateral_amount: u64) -
     }
 }
 
+fn buy_order(salt: u64, maker: u8, claim_amount: u64, collateral_amount: u64) -> Order {
+    Order {
+        salt: U256::from(salt),
+        maker: Address::repeat_byte(maker),
+        market_id: market_id(),
+        claim: ClaimSide::Payoff,
+        maker_amount: U256::from(collateral_amount),
+        taker_amount: U256::from(claim_amount),
+        side: Side::Buy,
+        expiration: U256::ZERO,
+        epoch: U256::from(1),
+        max_fee_rate_bps: 100,
+    }
+}
+
 fn service() -> OrderbookApiService<InMemoryEngineStore> {
     OrderbookApiService::new(AsceSwapEngine::default(), InMemoryEngineStore::new())
 }
@@ -76,6 +91,16 @@ fn submit_body(order: &Order, now: u64) -> serde_json::Value {
         "rest_on_no_match": true,
         "reservation_ttl_secs": 10,
     })
+}
+
+fn signature(byte: u8) -> String {
+    format!("0x{}", format!("{byte:02x}").repeat(65))
+}
+
+fn signed_submit_body(order: &Order, now: u64, signature_byte: u8) -> serde_json::Value {
+    let mut body = submit_body(order, now);
+    body["signature_bytes"] = serde_json::Value::String(signature(signature_byte));
+    body
 }
 
 async fn decode<T: DeserializeOwned>(body: Body) -> T {
@@ -227,6 +252,70 @@ async fn actor_router_market_depth_reads_resting_liquidity() {
     assert_eq!(body.side, ApiSide::Sell);
     assert_eq!(body.levels.len(), 1);
     assert_eq!(body.levels[0].total_claim_amount, "100");
+}
+
+#[tokio::test]
+async fn settlement_payload_route_returns_contract_arguments() {
+    let app = actor_router(actor_handle());
+    let maker = sell_order(1, 1, 100, 40);
+    let taker = buy_order(2, 2, 100, 50);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(signed_submit_body(&maker, 100, 1).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(signed_submit_body(&taker, 101, 2).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<SubmitOrderResponse>(response.into_body()).await;
+    let reservation_id = match body.outcome {
+        SubmitOrderResponseOutcome::Matched {
+            reservation_id,
+            settlement: Some(settlement),
+            ..
+        } => {
+            assert_eq!(settlement.taker_signature, signature(2));
+            assert_eq!(settlement.maker_signatures, vec![signature(1)]);
+            reservation_id
+        }
+        other => panic!("expected matched settlement, got {other:?}"),
+    };
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/reservations/{reservation_id}/settlement"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<asceswap_api::SettlementPayloadResponse>(response.into_body()).await;
+    assert_eq!(body.taker_order, ApiOrder::from(&taker));
+    assert_eq!(body.taker_signature, signature(2));
+    assert_eq!(body.maker_orders, vec![ApiOrder::from(&maker)]);
+    assert_eq!(body.maker_claim_fill_amounts, vec!["100".to_string()]);
 }
 
 #[tokio::test]

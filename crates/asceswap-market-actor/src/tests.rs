@@ -484,6 +484,7 @@ fn router_rejects_snapshot_reservation_spanning_markets() {
             OrderSnapshot {
                 hash: first_hash,
                 order: first,
+                signature: None,
                 state: OrderState::Reserved,
                 filled_claim_amount: U256::ZERO,
                 resting: true,
@@ -492,6 +493,7 @@ fn router_rejects_snapshot_reservation_spanning_markets() {
             OrderSnapshot {
                 hash: second_hash,
                 order: second,
+                signature: None,
                 state: OrderState::Reserved,
                 filled_claim_amount: U256::ZERO,
                 resting: true,

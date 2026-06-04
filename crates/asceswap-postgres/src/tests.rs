@@ -66,6 +66,10 @@ fn submit(order: Order, now: u64) -> SubmitOrder {
     SubmitOrder::new(order.clone(), validation(&order, now))
 }
 
+fn signed_submit(order: Order, now: u64, signature_byte: u8) -> SubmitOrder {
+    submit(order, now).with_signature(Some(vec![signature_byte; 65]))
+}
+
 fn with_postgres_store(test: impl FnOnce(&mut PostgresEngineStore)) {
     let url = std::env::var("ASCESWAP_POSTGRES_URL")
         .expect("set ASCESWAP_POSTGRES_URL to run live Postgres tests");
@@ -201,6 +205,7 @@ fn codec_rejects_out_of_range_storage_values() {
 fn postgres_schema_preserves_reservation_leg_order_and_payloads() {
     assert!(POSTGRES_SCHEMA.contains("leg_index INTEGER NOT NULL"));
     assert!(POSTGRES_SCHEMA.contains("accepted_sequence BIGINT"));
+    assert!(POSTGRES_SCHEMA.contains("signature_bytes BYTEA"));
     assert!(POSTGRES_SCHEMA.contains("payload JSONB NOT NULL"));
     assert!(POSTGRES_SCHEMA.contains("NUMERIC(78, 0)"));
 }
@@ -215,12 +220,12 @@ fn live_postgres_round_trips_snapshot_events_and_sequence() {
         let maker_hash = order_hash(&maker);
         let taker_hash = order_hash(&taker);
 
-        let first = engine.submit_order(submit(maker, 100)).unwrap();
+        let first = engine.submit_order(signed_submit(maker, 100, 1)).unwrap();
         store
             .persist_engine_update(0, 100, &first.events, engine.snapshot())
             .unwrap();
         let second = engine
-            .submit_order(submit(taker, 101).with_reservation_ttl_secs(Some(10)))
+            .submit_order(signed_submit(taker, 101, 2).with_reservation_ttl_secs(Some(10)))
             .unwrap();
         let reservation_id = match second.outcome {
             SubmitOrderOutcome::Matched { reservation_id, .. } => reservation_id,
@@ -249,6 +254,10 @@ fn live_postgres_round_trips_snapshot_events_and_sequence() {
         assert_eq!(
             recovered.order_record(maker_hash).unwrap().state(),
             OrderState::Reserved
+        );
+        assert_eq!(
+            recovered.order_record(maker_hash).unwrap().signature,
+            Some(vec![1; 65])
         );
         assert_eq!(
             recovered.order_record(taker_hash).unwrap().state(),
