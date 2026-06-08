@@ -16,4 +16,6 @@ postgres.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+asceswap-api.workspace = true
 asceswap-matcher.workspace = true
+k256 = "0.13"

@@ -252,6 +252,7 @@ dependencies = [
  "asceswap-storage",
  "asceswap-types",
  "asceswap-validation",
+ "k256",
  "serde",
  "serde_json",
  "tokio",
@@ -310,6 +311,7 @@ dependencies = [
 name = "asceswap-postgres"
 version = "0.1.0"
 dependencies = [
+ "asceswap-api",
  "asceswap-engine",
  "asceswap-matcher",
  "asceswap-math",
@@ -317,6 +319,7 @@ dependencies = [
  "asceswap-storage",
  "asceswap-types",
  "asceswap-validation",
+ "k256",
  "postgres",
  "serde_json",
 ]

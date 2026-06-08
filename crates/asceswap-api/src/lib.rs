@@ -1,4 +1,5 @@
 mod actor_service;
+mod demo_market_maker;
 mod error;
 mod event;
 mod request;
@@ -10,6 +11,7 @@ pub use actor_service::{
     spawn_actor_orderbook_api_service, spawn_actor_orderbook_api_service_with_capacity,
     ActorOrderbookApiHandle, ActorOrderbookApiService,
 };
+pub use demo_market_maker::DemoMarketMaker;
 pub use error::ApiError;
 pub use event::{ApiEvent, ApiEventKind};
 pub use request::{

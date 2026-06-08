@@ -1,12 +1,14 @@
 use asceswap_engine::{
     AsceSwapEngine, EngineError, EngineEvent, ReservationUpdateResult, SettlementPayload,
-    SubmitOrderOutcome as EngineSubmitOrderOutcome,
+    SubmitOrder, SubmitOrderOutcome as EngineSubmitOrderOutcome,
 };
 use asceswap_matcher::MatchConfig;
 use asceswap_math::remaining_claim_amount;
+use asceswap_state::ReservationId;
 use asceswap_storage::EngineStore;
 use asceswap_validation::SignatureDomain;
 
+use crate::demo_market_maker::DemoMarketMaker;
 use crate::event::ApiEvent;
 use crate::request::{
     CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
@@ -26,6 +28,7 @@ pub struct OrderbookApiService<S> {
     store: S,
     next_event_sequence: u64,
     signature_domain: Option<SignatureDomain>,
+    demo_market_maker: Option<DemoMarketMaker>,
 }
 
 impl<S: EngineStore> OrderbookApiService<S> {
@@ -35,6 +38,7 @@ impl<S: EngineStore> OrderbookApiService<S> {
             store,
             next_event_sequence: 0,
             signature_domain: None,
+            demo_market_maker: None,
         }
     }
 
@@ -51,11 +55,18 @@ impl<S: EngineStore> OrderbookApiService<S> {
             store,
             next_event_sequence,
             signature_domain: None,
+            demo_market_maker: None,
         })
     }
 
     pub fn with_signature_domain(mut self, signature_domain: SignatureDomain) -> Self {
         self.signature_domain = Some(signature_domain);
+        self
+    }
+
+    pub fn with_demo_market_maker(mut self, mut demo_market_maker: DemoMarketMaker) -> Self {
+        demo_market_maker.ensure_next_salt_at_least(self.next_event_sequence.saturating_add(1));
+        self.demo_market_maker = Some(demo_market_maker);
         self
     }
 
@@ -76,14 +87,25 @@ impl<S: EngineStore> OrderbookApiService<S> {
         request: SubmitOrderRequest,
     ) -> Result<SubmitOrderResponse, ApiError> {
         let now = request.validation.now;
-        let result = self
-            .engine
-            .submit_order(request.to_command_with_signature_domain(self.signature_domain)?)?;
-        let events = self.persist_and_project_events(now, &result.events)?;
+        let command = request.to_command_with_signature_domain(self.signature_domain)?;
+        let result = self.engine.submit_order(command.clone())?;
+        let mut engine_events = result.events.clone();
+        let mut outcome = result.outcome.clone();
+
+        if let Some((auto_outcome, mut auto_events)) =
+            self.run_demo_market_maker_after_submit(now, &command, &result.outcome)?
+        {
+            if matches!(auto_outcome, EngineSubmitOrderOutcome::Matched { .. }) {
+                outcome = auto_outcome;
+            }
+            engine_events.append(&mut auto_events);
+        }
+
+        let events = self.persist_and_project_events(now, &engine_events)?;
 
         Ok(SubmitOrderResponse {
             order_hash: encode_b256(result.order_hash),
-            outcome: submit_outcome_from_engine(result.outcome),
+            outcome: submit_outcome_from_engine(outcome),
             events,
         })
     }
@@ -206,6 +228,58 @@ impl<S: EngineStore> OrderbookApiService<S> {
             reservation_id: encode_b256(result.reservation_id),
             events,
         })
+    }
+
+    fn run_demo_market_maker_after_submit(
+        &mut self,
+        now: u64,
+        trigger_command: &SubmitOrder,
+        trigger_outcome: &EngineSubmitOrderOutcome,
+    ) -> Result<Option<(EngineSubmitOrderOutcome, Vec<EngineEvent>)>, ApiError> {
+        if !matches!(trigger_outcome, EngineSubmitOrderOutcome::Rested { .. }) {
+            return Ok(None);
+        }
+        if trigger_command.post_only {
+            return Ok(None);
+        }
+
+        let Some(demo_market_maker) = self.demo_market_maker.as_mut() else {
+            return Ok(None);
+        };
+        if trigger_command.order.maker == demo_market_maker.maker() {
+            return Ok(None);
+        }
+
+        let market_maker_command = demo_market_maker.counter_order_for(
+            &trigger_command.order,
+            trigger_command.validation.filled_claim_amount,
+            now,
+        )?;
+        let auto_commit = demo_market_maker.auto_commit();
+        let result = self.engine.submit_order(market_maker_command)?;
+        let mut events = result.events.clone();
+        if auto_commit {
+            if let EngineSubmitOrderOutcome::Matched { reservation_id, .. } = &result.outcome {
+                self.append_mock_commit_events(*reservation_id, now, &mut events)?;
+            }
+        }
+
+        Ok(Some((result.outcome, events)))
+    }
+
+    fn append_mock_commit_events(
+        &mut self,
+        reservation_id: ReservationId,
+        now: u64,
+        events: &mut Vec<EngineEvent>,
+    ) -> Result<(), ApiError> {
+        let submitted = self
+            .engine
+            .mark_reservation_submitted(reservation_id, now)?;
+        events.extend(submitted.events);
+        let committed = self.engine.commit_reservation(reservation_id)?;
+        events.extend(committed.events);
+        Ok(())
     }
 
     fn persist_and_project_events(

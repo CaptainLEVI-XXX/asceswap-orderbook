@@ -14,6 +14,7 @@ asceswap-state.workspace = true
 asceswap-storage.workspace = true
 asceswap-types.workspace = true
 asceswap-validation.workspace = true
+k256 = "0.13"
 serde.workspace = true
 tokio.workspace = true
 

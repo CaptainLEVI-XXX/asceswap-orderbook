@@ -1,5 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use asceswap_api::{
+    ApiOrder, ApiOrderState, ApiSignatureCheck, OrderStatusRequest, OrderbookApiService,
+    ReservationActionRequest, SubmitOrderRequest, SubmitOrderResponseOutcome,
+    ValidationContextRequest,
+};
 use asceswap_engine::{
     AsceSwapEngine, EngineEvent, EngineSnapshot, SubmitOrder, SubmitOrderOutcome,
 };
@@ -8,7 +13,11 @@ use asceswap_math::MathError;
 use asceswap_state::{OrderState, ReservationLegRole, ReservationStatus};
 use asceswap_storage::EngineStore;
 use asceswap_types::{Address, ClaimSide, MatchKind, Order, OrderError, Side, B256, U256};
-use asceswap_validation::{order_hash, OrderValidationContext, SignatureCheck, ValidationError};
+use asceswap_validation::{
+    order_digest, order_hash, OrderValidationContext, SignatureCheck, SignatureDomain,
+    ValidationError,
+};
+use k256::ecdsa::SigningKey;
 use postgres::{Client, NoTls};
 
 use crate::codec::{
@@ -70,6 +79,67 @@ fn signed_submit(order: Order, now: u64, signature_byte: u8) -> SubmitOrder {
     submit(order, now).with_signature(Some(vec![signature_byte; 65]))
 }
 
+fn eoa_order(mut order: Order, private_key_byte: u8) -> Order {
+    let signing_key = SigningKey::from_bytes((&[private_key_byte; 32]).into()).unwrap();
+    order.maker = Address::from_public_key(signing_key.verifying_key());
+    order
+}
+
+fn eoa_signature_bytes(order: &Order, domain: SignatureDomain, private_key_byte: u8) -> Vec<u8> {
+    let signing_key = SigningKey::from_bytes((&[private_key_byte; 32]).into()).unwrap();
+    let digest = order_digest(order, domain);
+    let (signature, recovery_id) = signing_key
+        .sign_prehash_recoverable(digest.as_slice())
+        .unwrap();
+
+    let mut signature_bytes = Vec::with_capacity(65);
+    signature_bytes.extend_from_slice(&signature.to_bytes());
+    signature_bytes.push(27 + u8::from(recovery_id));
+    signature_bytes
+}
+
+fn signed_submit_request(
+    order: &Order,
+    domain: SignatureDomain,
+    now: u64,
+    private_key_byte: u8,
+) -> SubmitOrderRequest {
+    SubmitOrderRequest {
+        order: ApiOrder::from(order),
+        validation: ValidationContextRequest {
+            now,
+            expected_order_hash: Some(encode_b256(order_hash(order))),
+            filled_claim_amount: "0".to_string(),
+            cancelled: false,
+            maker_epoch: order.epoch.to_string(),
+            fee_rate_bps: 0,
+            signature: ApiSignatureCheck::Unchecked,
+            require_signature: false,
+        },
+        signature_bytes: Some(encode_bytes(&eoa_signature_bytes(
+            order,
+            domain,
+            private_key_byte,
+        ))),
+        post_only: false,
+        rest_on_no_match: true,
+        reservation_ttl_secs: Some(10),
+    }
+}
+
+fn encode_b256(value: B256) -> String {
+    encode_bytes(value.as_slice())
+}
+
+fn encode_bytes(value: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + value.len() * 2);
+    out.push_str("0x");
+    for byte in value {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 fn with_postgres_store(test: impl FnOnce(&mut PostgresEngineStore)) {
     let url = std::env::var("ASCESWAP_POSTGRES_URL")
         .expect("set ASCESWAP_POSTGRES_URL to run live Postgres tests");
@@ -89,6 +159,26 @@ fn with_postgres_store(test: impl FnOnce(&mut PostgresEngineStore)) {
     store.run_schema().unwrap();
     store.run_schema().unwrap();
     test(&mut store);
+}
+
+fn with_owned_postgres_store(test: impl FnOnce(PostgresEngineStore)) {
+    let url = std::env::var("ASCESWAP_POSTGRES_URL")
+        .expect("set ASCESWAP_POSTGRES_URL to run live Postgres tests");
+    let schema = TestSchema {
+        url: url.clone(),
+        name: unique_schema_name(),
+    };
+    let mut client = Client::connect(&url, NoTls).unwrap();
+    client
+        .batch_execute(&format!(
+            "CREATE SCHEMA {}; SET search_path TO {};",
+            schema.name, schema.name
+        ))
+        .unwrap();
+
+    let mut store = PostgresEngineStore::new(client);
+    store.run_schema().unwrap();
+    test(store);
 }
 
 struct TestSchema {
@@ -266,6 +356,100 @@ fn live_postgres_round_trips_snapshot_events_and_sequence() {
         assert_eq!(
             recovered.reservation(reservation_id).unwrap().status,
             ReservationStatus::Reserved
+        );
+    });
+}
+
+#[test]
+#[ignore = "requires ASCESWAP_POSTGRES_URL"]
+fn live_postgres_product_flow_verifies_api_signature_storage_and_market_maker_match() {
+    with_owned_postgres_store(|store| {
+        let domain = SignatureDomain::new(U256::from(31_337), Address::repeat_byte(17));
+        let mut service = OrderbookApiService::new(AsceSwapEngine::default(), store)
+            .with_signature_domain(domain);
+
+        let user_order = eoa_order(sell_order(1, 0, 100, 40), 7);
+        let user_signature = eoa_signature_bytes(&user_order, domain, 7);
+        let user_response = service
+            .submit_order(signed_submit_request(&user_order, domain, 100, 7))
+            .unwrap();
+
+        assert!(matches!(
+            user_response.outcome,
+            SubmitOrderResponseOutcome::Rested { .. }
+        ));
+        let stored_orders = service.store().load_orders().unwrap();
+        assert_eq!(stored_orders.len(), 1);
+        assert_eq!(stored_orders[0].snapshot.hash, order_hash(&user_order));
+        assert_eq!(stored_orders[0].snapshot.signature, Some(user_signature));
+        assert_eq!(stored_orders[0].snapshot.state, OrderState::Open);
+
+        let market_maker_order = eoa_order(buy_order(2, 0, 100, 50), 8);
+        let market_maker_signature = eoa_signature_bytes(&market_maker_order, domain, 8);
+        let market_maker_response = service
+            .submit_order(signed_submit_request(&market_maker_order, domain, 101, 8))
+            .unwrap();
+        let (reservation_id, settlement) = match market_maker_response.outcome {
+            SubmitOrderResponseOutcome::Matched {
+                reservation_id,
+                maker_count: 1,
+                settlement: Some(settlement),
+                ..
+            } => (reservation_id, settlement),
+            other => panic!("expected direct market-maker match, got {other:?}"),
+        };
+        assert_eq!(settlement.taker_order, ApiOrder::from(&market_maker_order));
+        assert_eq!(
+            settlement.taker_signature,
+            encode_bytes(&market_maker_signature)
+        );
+        assert_eq!(settlement.maker_orders, vec![ApiOrder::from(&user_order)]);
+
+        let stored_reservations = service.store().load_reservations().unwrap();
+        assert_eq!(stored_reservations.len(), 1);
+        assert_eq!(
+            stored_reservations[0].reservation.status,
+            ReservationStatus::Reserved
+        );
+
+        service
+            .mark_reservation_submitted(ReservationActionRequest {
+                reservation_id: reservation_id.clone(),
+                now: 102,
+            })
+            .unwrap();
+        service
+            .commit_reservation(ReservationActionRequest {
+                reservation_id,
+                now: 103,
+            })
+            .unwrap();
+
+        let status = service
+            .order_status(OrderStatusRequest {
+                order_hash: encode_b256(order_hash(&market_maker_order)),
+            })
+            .unwrap();
+        assert_eq!(status.state, ApiOrderState::Filled);
+
+        let (_, store) = service.into_parts();
+        let recovered =
+            OrderbookApiService::recover_from_store(store, MatchConfig::default()).unwrap();
+        assert_eq!(
+            recovered
+                .engine()
+                .order_record(order_hash(&user_order))
+                .unwrap()
+                .state(),
+            OrderState::Filled
+        );
+        assert_eq!(
+            recovered
+                .engine()
+                .order_record(order_hash(&market_maker_order))
+                .unwrap()
+                .signature,
+            Some(market_maker_signature)
         );
     });
 }

@@ -1,7 +1,7 @@
 use std::env;
 use std::net::SocketAddr;
 
-use asceswap_api::{spawn_actor_orderbook_api_service, ActorOrderbookApiService};
+use asceswap_api::{spawn_actor_orderbook_api_service, ActorOrderbookApiService, DemoMarketMaker};
 use asceswap_matcher::MatchConfig;
 use asceswap_postgres::PostgresEngineStore;
 use asceswap_server::actor_router;
@@ -37,13 +37,25 @@ async fn run_from_env() -> Result<(), String> {
         store.run_schema().map_err(|error| format!("{error:?}"))?;
     }
 
-    let service = ActorOrderbookApiService::recover_from_store(
+    let mut service = ActorOrderbookApiService::recover_from_store(
         store,
         MatchConfig::default(),
         MARKET_ACTOR_INBOX_CAPACITY,
     )
     .map_err(|error| format!("{error:?}"))?
     .with_signature_domain(signature_domain);
+    if let Some(private_key) = env_private_key("ASCESWAP_DEMO_MM_PRIVATE_KEY")? {
+        let demo_market_maker = DemoMarketMaker::new(
+            private_key,
+            signature_domain,
+            env_u256_default("ASCESWAP_DEMO_MM_EPOCH", U256::from(1))?,
+            env_u16_default("ASCESWAP_DEMO_MM_MAX_FEE_RATE_BPS", 100)?,
+            env_optional_u64("ASCESWAP_DEMO_MM_RESERVATION_TTL_SECS")?.or(Some(30)),
+            env_bool("ASCESWAP_DEMO_MM_AUTO_COMMIT", false)?,
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        service = service.with_demo_market_maker(demo_market_maker);
+    }
     let service = spawn_actor_orderbook_api_service(service);
 
     let listener = tokio::net::TcpListener::bind(listen_addr)
@@ -63,6 +75,64 @@ fn env_u256(name: &str) -> Result<U256, String> {
 
     U256::from_str_radix(&value, 10)
         .map_err(|_| format!("invalid {name}: expected decimal uint256"))
+}
+
+fn env_u256_default(name: &str, default: U256) -> Result<U256, String> {
+    match env::var(name) {
+        Ok(value) => {
+            if value.is_empty() {
+                return Err(format!("{name} cannot be empty"));
+            }
+            U256::from_str_radix(&value, 10)
+                .map_err(|_| format!("invalid {name}: expected decimal uint256"))
+        }
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_u16_default(name: &str, default: u16) -> Result<u16, String> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse::<u16>()
+            .map_err(|_| format!("invalid {name}: expected u16")),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_optional_u64(name: &str) -> Result<Option<u64>, String> {
+    match env::var(name) {
+        Ok(value) if value.is_empty() => Err(format!("{name} cannot be empty")),
+        Ok(value) => value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| format!("invalid {name}: expected u64")),
+        Err(_) => Ok(None),
+    }
+}
+
+fn env_private_key(name: &str) -> Result<Option<[u8; 32]>, String> {
+    let value = match env::var(name) {
+        Ok(value) if value.is_empty() => return Err(format!("{name} cannot be empty")),
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let raw = value
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("invalid {name}: missing 0x prefix"))?;
+    if raw.len() != 64 {
+        return Err(format!("invalid {name}: expected 32-byte hex private key"));
+    }
+
+    let mut bytes = [0_u8; 32];
+    for (index, chunk) in raw.as_bytes().chunks_exact(2).enumerate() {
+        let high =
+            hex_nibble(chunk[0]).ok_or_else(|| format!("invalid {name}: invalid hex character"))?;
+        let low =
+            hex_nibble(chunk[1]).ok_or_else(|| format!("invalid {name}: invalid hex character"))?;
+        bytes[index] = (high << 4) | low;
+    }
+
+    Ok(Some(bytes))
 }
 
 fn env_address(name: &str) -> Result<Address, String> {
