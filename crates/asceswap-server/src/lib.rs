@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use asceswap_api::{
     ActorOrderbookApiHandle, ApiClaimSide, ApiError, ApiEvent, ApiSide, CancelOrderRequest,
-    MarketDepthRequest, OrderStatusRequest, OrderbookApiService, ReservationActionRequest,
-    ReservationActionResponse, SettlementPayloadRequest, SettlementPayloadResponse,
-    SubmitOrderRequest,
+    ListEventsRequest, ListOrdersRequest, ListReservationsRequest, MarketDepthRequest,
+    OrderStatusRequest, OrderbookApiService, ReservationActionRequest, ReservationActionResponse,
+    SettlementPayloadRequest, SettlementPayloadResponse, SubmitOrderRequest,
 };
 use asceswap_storage::EngineStore;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -81,10 +81,14 @@ where
 {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/orders", post(submit_order::<S>))
+        .route("/orders", get(list_orders::<S>).post(submit_order::<S>))
         .route("/orders/cancel", post(cancel_order::<S>))
         .route("/orders/:order_hash", get(order_status::<S>))
+        .route("/markets", get(list_markets::<S>))
+        .route("/markets/:market_id/orders", get(list_market_orders::<S>))
         .route("/markets/:market_id/depth", get(market_depth::<S>))
+        .route("/events", get(list_events::<S>))
+        .route("/reservations", get(list_reservations::<S>))
         .route(
             "/reservations/:reservation_id/submitted",
             post(mark_reservation_submitted::<S>),
@@ -116,10 +120,14 @@ pub fn actor_router(service: ActorOrderbookApiHandle) -> Router {
 pub fn actor_router_from_state(state: ActorServerState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/orders", post(actor_submit_order))
+        .route("/orders", get(actor_list_orders).post(actor_submit_order))
         .route("/orders/cancel", post(actor_cancel_order))
         .route("/orders/:order_hash", get(actor_order_status))
+        .route("/markets", get(actor_list_markets))
+        .route("/markets/:market_id/orders", get(actor_list_market_orders))
         .route("/markets/:market_id/depth", get(actor_market_depth))
+        .route("/events", get(actor_list_events))
+        .route("/reservations", get(actor_list_reservations))
         .route(
             "/reservations/:reservation_id/submitted",
             post(actor_mark_reservation_submitted),
@@ -193,6 +201,62 @@ where
     ))
 }
 
+async fn list_orders<S>(
+    State(state): State<ServerState<S>>,
+    Query(request): Query<ListOrdersRequest>,
+) -> Result<Json<asceswap_api::ListOrdersResponse>, ServerError>
+where
+    S: EngineStore + Send + 'static,
+{
+    let service = state.service.lock().await;
+    Ok(Json(service.list_orders(request)?))
+}
+
+async fn list_market_orders<S>(
+    State(state): State<ServerState<S>>,
+    Path(market_id): Path<String>,
+    Query(mut request): Query<ListOrdersRequest>,
+) -> Result<Json<asceswap_api::ListOrdersResponse>, ServerError>
+where
+    S: EngineStore + Send + 'static,
+{
+    request.market_id = Some(market_id);
+    let service = state.service.lock().await;
+    Ok(Json(service.list_orders(request)?))
+}
+
+async fn list_markets<S>(
+    State(state): State<ServerState<S>>,
+) -> Result<Json<asceswap_api::ListMarketsResponse>, ServerError>
+where
+    S: EngineStore + Send + 'static,
+{
+    let service = state.service.lock().await;
+    Ok(Json(service.list_markets()?))
+}
+
+async fn list_events<S>(
+    State(state): State<ServerState<S>>,
+    Query(request): Query<ListEventsRequest>,
+) -> Result<Json<asceswap_api::ListEventsResponse>, ServerError>
+where
+    S: EngineStore + Send + 'static,
+{
+    let service = state.service.lock().await;
+    Ok(Json(service.list_events(request)?))
+}
+
+async fn list_reservations<S>(
+    State(state): State<ServerState<S>>,
+    Query(request): Query<ListReservationsRequest>,
+) -> Result<Json<asceswap_api::ListReservationsResponse>, ServerError>
+where
+    S: EngineStore + Send + 'static,
+{
+    let service = state.service.lock().await;
+    Ok(Json(service.list_reservations(request)?))
+}
+
 async fn actor_submit_order(
     State(state): State<ActorServerState>,
     Json(request): Json<SubmitOrderRequest>,
@@ -221,6 +285,42 @@ async fn actor_order_status(
             .order_status(OrderStatusRequest { order_hash })
             .await?,
     ))
+}
+
+async fn actor_list_orders(
+    State(state): State<ActorServerState>,
+    Query(request): Query<ListOrdersRequest>,
+) -> Result<Json<asceswap_api::ListOrdersResponse>, ServerError> {
+    Ok(Json(state.service.list_orders(request).await?))
+}
+
+async fn actor_list_market_orders(
+    State(state): State<ActorServerState>,
+    Path(market_id): Path<String>,
+    Query(mut request): Query<ListOrdersRequest>,
+) -> Result<Json<asceswap_api::ListOrdersResponse>, ServerError> {
+    request.market_id = Some(market_id);
+    Ok(Json(state.service.list_orders(request).await?))
+}
+
+async fn actor_list_markets(
+    State(state): State<ActorServerState>,
+) -> Result<Json<asceswap_api::ListMarketsResponse>, ServerError> {
+    Ok(Json(state.service.list_markets().await?))
+}
+
+async fn actor_list_events(
+    State(state): State<ActorServerState>,
+    Query(request): Query<ListEventsRequest>,
+) -> Result<Json<asceswap_api::ListEventsResponse>, ServerError> {
+    Ok(Json(state.service.list_events(request).await?))
+}
+
+async fn actor_list_reservations(
+    State(state): State<ActorServerState>,
+    Query(request): Query<ListReservationsRequest>,
+) -> Result<Json<asceswap_api::ListReservationsResponse>, ServerError> {
+    Ok(Json(state.service.list_reservations(request).await?))
 }
 
 async fn actor_market_depth(

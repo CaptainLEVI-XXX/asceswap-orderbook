@@ -1,7 +1,8 @@
 use asceswap_api::{
     spawn_actor_orderbook_api_service_with_capacity, ActorOrderbookApiService, ApiClaimSide,
-    ApiOrder, ApiSide, ApiSignatureCheck, OrderbookApiService, SubmitOrderResponse,
-    SubmitOrderResponseOutcome, ValidationContextRequest,
+    ApiOrder, ApiReservationStatus, ApiSide, ApiSignatureCheck, ListEventsResponse,
+    ListMarketsResponse, ListOrdersResponse, ListReservationsResponse, OrderbookApiService,
+    SubmitOrderResponse, SubmitOrderResponseOutcome, ValidationContextRequest,
 };
 use asceswap_engine::AsceSwapEngine;
 use asceswap_matcher::MatchConfig;
@@ -253,6 +254,159 @@ async fn actor_router_market_depth_reads_resting_liquidity() {
     assert_eq!(body.side, ApiSide::Sell);
     assert_eq!(body.levels.len(), 1);
     assert_eq!(body.levels[0].total_claim_amount, "100");
+}
+
+#[tokio::test]
+async fn list_orders_filters_user_history_and_market_orders() {
+    let app = actor_router(actor_handle());
+    let first = sell_order(1, 1, 100, 40);
+    let second = sell_order(2, 2, 100, 45);
+    for order in [&first, &second] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/orders")
+                    .header("content-type", "application/json")
+                    .body(Body::from(submit_body(order, 100).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/orders?maker={}&resting=true",
+                    ApiOrder::from(&first).maker
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<ListOrdersResponse>(response.into_body()).await;
+    assert_eq!(body.orders.len(), 1);
+    assert_eq!(body.orders[0].order, ApiOrder::from(&first));
+    assert!(body.orders[0].resting);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/markets/{}/orders?claim=payoff&side=sell&state=open",
+                    encode_b256(market_id())
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<ListOrdersResponse>(response.into_body()).await;
+    assert_eq!(body.orders.len(), 2);
+    assert!(body
+        .orders
+        .iter()
+        .all(|order| order.state == asceswap_api::ApiOrderState::Open));
+}
+
+#[tokio::test]
+async fn list_markets_and_events_support_frontend_recovery() {
+    let app = actor_router(actor_handle());
+    let order = sell_order(1, 1, 100, 40);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/orders")
+                .header("content-type", "application/json")
+                .body(Body::from(submit_body(&order, 100).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/markets")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<ListMarketsResponse>(response.into_body()).await;
+    assert_eq!(body.markets.len(), 1);
+    assert_eq!(body.markets[0].market_id, encode_b256(market_id()));
+    assert_eq!(body.markets[0].order_count, 1);
+    assert_eq!(body.markets[0].resting_order_count, 1);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/events?from_sequence=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<ListEventsResponse>(response.into_body()).await;
+    assert_eq!(body.events.len(), 2);
+    assert_eq!(body.events[0].sequence, 1);
+}
+
+#[tokio::test]
+async fn list_reservations_filters_by_status_and_market() {
+    let app = actor_router(actor_handle());
+    let maker = sell_order(1, 1, 100, 40);
+    let taker = buy_order(2, 2, 100, 50);
+    for (order, signature_byte, now) in [(&maker, 1, 100), (&taker, 2, 101)] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/orders")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        signed_submit_body(order, now, signature_byte).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/reservations?status=reserved&market_id={}",
+                    encode_b256(market_id())
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = decode::<ListReservationsResponse>(response.into_body()).await;
+    assert_eq!(body.reservations.len(), 1);
+    assert_eq!(body.reservations[0].status, ApiReservationStatus::Reserved);
+    assert_eq!(body.reservations[0].legs.len(), 2);
 }
 
 #[tokio::test]

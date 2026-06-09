@@ -6,9 +6,13 @@ use asceswap_validation::{
 };
 
 use crate::wire::{
-    parse_b256, parse_hex_bytes, parse_u256, ApiClaimSide, ApiOrder, ApiSide, ApiSignatureCheck,
+    parse_address, parse_b256, parse_hex_bytes, parse_u256, ApiClaimSide, ApiOrder, ApiOrderState,
+    ApiReservationStatus, ApiSide, ApiSignatureCheck,
 };
 use crate::ApiError;
+
+pub const DEFAULT_LIST_LIMIT: usize = 100;
+pub const MAX_LIST_LIMIT: usize = 1_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationContextRequest {
@@ -159,4 +163,116 @@ impl MarketDepthRequest {
     pub fn market_id(&self) -> Result<asceswap_types::MarketId, ApiError> {
         parse_b256("market_id", &self.market_id)
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListOrdersRequest {
+    pub maker: Option<String>,
+    pub market_id: Option<String>,
+    pub claim: Option<ApiClaimSide>,
+    pub side: Option<ApiSide>,
+    pub state: Option<ApiOrderState>,
+    pub resting: Option<bool>,
+    pub limit: Option<usize>,
+}
+
+impl ListOrdersRequest {
+    pub fn maker(&self) -> Result<Option<asceswap_types::Address>, ApiError> {
+        self.maker
+            .as_deref()
+            .map(|value| parse_address("maker", value))
+            .transpose()
+    }
+
+    pub fn market_id(&self) -> Result<Option<asceswap_types::MarketId>, ApiError> {
+        self.market_id
+            .as_deref()
+            .map(|value| parse_b256("market_id", value))
+            .transpose()
+    }
+
+    pub fn limit(&self) -> Result<usize, ApiError> {
+        bounded_limit(self.limit)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListMarketOrdersRequest {
+    pub market_id: String,
+    pub maker: Option<String>,
+    pub claim: Option<ApiClaimSide>,
+    pub side: Option<ApiSide>,
+    pub state: Option<ApiOrderState>,
+    pub resting: Option<bool>,
+    pub limit: Option<usize>,
+}
+
+impl ListMarketOrdersRequest {
+    pub fn to_list_orders_request(&self) -> ListOrdersRequest {
+        ListOrdersRequest {
+            maker: self.maker.clone(),
+            market_id: Some(self.market_id.clone()),
+            claim: self.claim,
+            side: self.side,
+            state: self.state,
+            resting: self.resting,
+            limit: self.limit,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventsRequest {
+    pub from_sequence: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+impl ListEventsRequest {
+    pub fn from_sequence(&self) -> u64 {
+        self.from_sequence.unwrap_or(0)
+    }
+
+    pub fn limit(&self) -> Result<usize, ApiError> {
+        bounded_limit(self.limit)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListReservationsRequest {
+    pub status: Option<ApiReservationStatus>,
+    pub market_id: Option<String>,
+    pub order_hash: Option<String>,
+    pub limit: Option<usize>,
+}
+
+impl ListReservationsRequest {
+    pub fn market_id(&self) -> Result<Option<asceswap_types::MarketId>, ApiError> {
+        self.market_id
+            .as_deref()
+            .map(|value| parse_b256("market_id", value))
+            .transpose()
+    }
+
+    pub fn order_hash(&self) -> Result<Option<asceswap_types::OrderHash>, ApiError> {
+        self.order_hash
+            .as_deref()
+            .map(|value| parse_b256("order_hash", value))
+            .transpose()
+    }
+
+    pub fn limit(&self) -> Result<usize, ApiError> {
+        bounded_limit(self.limit)
+    }
+}
+
+fn bounded_limit(limit: Option<usize>) -> Result<usize, ApiError> {
+    let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT);
+    if limit == 0 || limit > MAX_LIST_LIMIT {
+        return Err(ApiError::InvalidField {
+            field: "limit",
+            reason: "limit must be between 1 and 1000",
+        });
+    }
+
+    Ok(limit)
 }

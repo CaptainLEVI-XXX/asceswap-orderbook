@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use asceswap_state::OrderState;
+use asceswap_state::{OrderState, ReservationLegRole, ReservationStatus};
 use asceswap_types::{Address, ClaimSide, MatchKind, Side, B256, U256};
 use asceswap_validation::SignatureCheck;
 
@@ -110,6 +110,77 @@ impl From<OrderState> for ApiOrderState {
             OrderState::Cancelled => Self::Cancelled,
             OrderState::EpochInvalidated => Self::EpochInvalidated,
             OrderState::Inactive => Self::Inactive,
+        }
+    }
+}
+
+impl From<ApiOrderState> for OrderState {
+    fn from(value: ApiOrderState) -> Self {
+        match value {
+            ApiOrderState::Received => Self::Received,
+            ApiOrderState::Validating => Self::Validating,
+            ApiOrderState::Rejected => Self::Rejected,
+            ApiOrderState::Open => Self::Open,
+            ApiOrderState::PartiallyFilled => Self::PartiallyFilled,
+            ApiOrderState::Reserved => Self::Reserved,
+            ApiOrderState::Submitted => Self::Submitted,
+            ApiOrderState::Filled => Self::Filled,
+            ApiOrderState::Expired => Self::Expired,
+            ApiOrderState::SoftCancelled => Self::SoftCancelled,
+            ApiOrderState::CancelPending => Self::CancelPending,
+            ApiOrderState::Cancelled => Self::Cancelled,
+            ApiOrderState::EpochInvalidated => Self::EpochInvalidated,
+            ApiOrderState::Inactive => Self::Inactive,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiReservationStatus {
+    Reserved,
+    Submitted,
+    Released,
+    Expired,
+    Committed,
+}
+
+impl From<ReservationStatus> for ApiReservationStatus {
+    fn from(value: ReservationStatus) -> Self {
+        match value {
+            ReservationStatus::Reserved => Self::Reserved,
+            ReservationStatus::Submitted => Self::Submitted,
+            ReservationStatus::Released => Self::Released,
+            ReservationStatus::Expired => Self::Expired,
+            ReservationStatus::Committed => Self::Committed,
+        }
+    }
+}
+
+impl From<ApiReservationStatus> for ReservationStatus {
+    fn from(value: ApiReservationStatus) -> Self {
+        match value {
+            ApiReservationStatus::Reserved => Self::Reserved,
+            ApiReservationStatus::Submitted => Self::Submitted,
+            ApiReservationStatus::Released => Self::Released,
+            ApiReservationStatus::Expired => Self::Expired,
+            ApiReservationStatus::Committed => Self::Committed,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiReservationLegRole {
+    Taker,
+    Maker,
+}
+
+impl From<ReservationLegRole> for ApiReservationLegRole {
+    fn from(value: ReservationLegRole) -> Self {
+        match value {
+            ReservationLegRole::Taker => Self::Taker,
+            ReservationLegRole::Maker => Self::Maker,
         }
     }
 }

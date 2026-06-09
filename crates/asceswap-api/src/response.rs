@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::event::ApiEvent;
-use crate::wire::{ApiClaimSide, ApiMatchKind, ApiOrder, ApiOrderState, ApiSide};
+use crate::wire::{
+    ApiClaimSide, ApiMatchKind, ApiOrder, ApiOrderState, ApiReservationLegRole,
+    ApiReservationStatus, ApiSide,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitOrderResponse {
@@ -75,4 +78,61 @@ pub struct MarketDepthResponse {
     pub claim: ApiClaimSide,
     pub side: ApiSide,
     pub levels: Vec<DepthLevelResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrderSummaryResponse {
+    pub order_hash: String,
+    pub order: ApiOrder,
+    pub state: ApiOrderState,
+    pub filled_claim_amount: String,
+    pub remaining_claim_amount: String,
+    pub resting: bool,
+    pub accepted_sequence: Option<u64>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListOrdersResponse {
+    pub orders: Vec<OrderSummaryResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarketSummaryResponse {
+    pub market_id: String,
+    pub order_count: usize,
+    pub resting_order_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListMarketsResponse {
+    pub markets: Vec<MarketSummaryResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventsResponse {
+    pub events: Vec<ApiEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReservationLegResponse {
+    pub order_hash: String,
+    pub role: ApiReservationLegRole,
+    pub claim_amount: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReservationSummaryResponse {
+    pub reservation_id: String,
+    pub status: ApiReservationStatus,
+    pub created_at: u64,
+    pub expires_at: Option<u64>,
+    pub updated_at: u64,
+    pub legs: Vec<ReservationLegResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListReservationsResponse {
+    pub reservations: Vec<ReservationSummaryResponse>,
 }

@@ -12,14 +12,20 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::demo_market_maker::DemoMarketMaker;
 use crate::request::{
-    CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
+    CancelOrderRequest, ListEventsRequest, ListMarketOrdersRequest, ListOrdersRequest,
+    ListReservationsRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
     SettlementPayloadRequest, SubmitOrderRequest,
 };
 use crate::response::{
-    CancelOrderResponse, DepthLevelResponse, MarketDepthResponse, OrderStatusResponse,
+    CancelOrderResponse, DepthLevelResponse, ListEventsResponse, ListMarketsResponse,
+    ListOrdersResponse, ListReservationsResponse, MarketDepthResponse, OrderStatusResponse,
     ReservationActionResponse, SettlementPayloadResponse, SubmitOrderResponse,
 };
-use crate::service::{project_events, settlement_payload_from_engine, submit_outcome_from_engine};
+use crate::service::{
+    list_events_from_store, list_markets_from_store, list_orders_from_store,
+    list_reservations_from_store, project_events, settlement_payload_from_engine,
+    submit_outcome_from_engine,
+};
 use crate::wire::{encode_b256, encode_u256};
 use crate::{ApiError, ApiEvent};
 
@@ -129,6 +135,55 @@ impl ActorOrderbookApiHandle {
         .await
     }
 
+    pub async fn list_orders(
+        &self,
+        request: ListOrdersRequest,
+    ) -> Result<ListOrdersResponse, ApiError> {
+        self.request(|respond_to| ActorOrderbookApiMessage::ListOrders {
+            request,
+            respond_to,
+        })
+        .await
+    }
+
+    pub async fn list_market_orders(
+        &self,
+        request: ListMarketOrdersRequest,
+    ) -> Result<ListOrdersResponse, ApiError> {
+        self.request(|respond_to| ActorOrderbookApiMessage::ListMarketOrders {
+            request,
+            respond_to,
+        })
+        .await
+    }
+
+    pub async fn list_markets(&self) -> Result<ListMarketsResponse, ApiError> {
+        self.request(|respond_to| ActorOrderbookApiMessage::ListMarkets { respond_to })
+            .await
+    }
+
+    pub async fn list_events(
+        &self,
+        request: ListEventsRequest,
+    ) -> Result<ListEventsResponse, ApiError> {
+        self.request(|respond_to| ActorOrderbookApiMessage::ListEvents {
+            request,
+            respond_to,
+        })
+        .await
+    }
+
+    pub async fn list_reservations(
+        &self,
+        request: ListReservationsRequest,
+    ) -> Result<ListReservationsResponse, ApiError> {
+        self.request(|respond_to| ActorOrderbookApiMessage::ListReservations {
+            request,
+            respond_to,
+        })
+        .await
+    }
+
     pub async fn market_depth(
         &self,
         request: MarketDepthRequest,
@@ -224,6 +279,25 @@ enum ActorOrderbookApiMessage {
         request: OrderStatusRequest,
         respond_to: oneshot::Sender<Result<OrderStatusResponse, ApiError>>,
     },
+    ListOrders {
+        request: ListOrdersRequest,
+        respond_to: oneshot::Sender<Result<ListOrdersResponse, ApiError>>,
+    },
+    ListMarketOrders {
+        request: ListMarketOrdersRequest,
+        respond_to: oneshot::Sender<Result<ListOrdersResponse, ApiError>>,
+    },
+    ListMarkets {
+        respond_to: oneshot::Sender<Result<ListMarketsResponse, ApiError>>,
+    },
+    ListEvents {
+        request: ListEventsRequest,
+        respond_to: oneshot::Sender<Result<ListEventsResponse, ApiError>>,
+    },
+    ListReservations {
+        request: ListReservationsRequest,
+        respond_to: oneshot::Sender<Result<ListReservationsResponse, ApiError>>,
+    },
     MarketDepth {
         request: MarketDepthRequest,
         respond_to: oneshot::Sender<Result<MarketDepthResponse, ApiError>>,
@@ -273,6 +347,25 @@ async fn run_actor_orderbook_api_service<S>(
                 request,
                 respond_to,
             } => send_response(respond_to, service.order_status(request).await),
+            ActorOrderbookApiMessage::ListOrders {
+                request,
+                respond_to,
+            } => send_response(respond_to, service.list_orders(request).await),
+            ActorOrderbookApiMessage::ListMarketOrders {
+                request,
+                respond_to,
+            } => send_response(respond_to, service.list_market_orders(request).await),
+            ActorOrderbookApiMessage::ListMarkets { respond_to } => {
+                send_response(respond_to, service.list_markets().await)
+            }
+            ActorOrderbookApiMessage::ListEvents {
+                request,
+                respond_to,
+            } => send_response(respond_to, service.list_events(request).await),
+            ActorOrderbookApiMessage::ListReservations {
+                request,
+                respond_to,
+            } => send_response(respond_to, service.list_reservations(request).await),
             ActorOrderbookApiMessage::MarketDepth {
                 request,
                 respond_to,
@@ -484,6 +577,38 @@ impl<S: EngineStore> ActorOrderbookApiService<S> {
             remaining_claim_amount: encode_u256(remaining),
             resting: record.resting,
         })
+    }
+
+    pub async fn list_orders(
+        &mut self,
+        request: ListOrdersRequest,
+    ) -> Result<ListOrdersResponse, ApiError> {
+        list_orders_from_store(&self.store, request)
+    }
+
+    pub async fn list_market_orders(
+        &mut self,
+        request: ListMarketOrdersRequest,
+    ) -> Result<ListOrdersResponse, ApiError> {
+        list_orders_from_store(&self.store, request.to_list_orders_request())
+    }
+
+    pub async fn list_markets(&mut self) -> Result<ListMarketsResponse, ApiError> {
+        list_markets_from_store(&self.store)
+    }
+
+    pub async fn list_events(
+        &mut self,
+        request: ListEventsRequest,
+    ) -> Result<ListEventsResponse, ApiError> {
+        list_events_from_store(&self.store, request)
+    }
+
+    pub async fn list_reservations(
+        &mut self,
+        request: ListReservationsRequest,
+    ) -> Result<ListReservationsResponse, ApiError> {
+        list_reservations_from_store(&self.store, request)
     }
 
     pub async fn market_depth(

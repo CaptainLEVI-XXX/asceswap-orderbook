@@ -1,25 +1,32 @@
+use std::collections::{BTreeMap, HashMap};
+
 use asceswap_engine::{
     AsceSwapEngine, EngineError, EngineEvent, ReservationUpdateResult, SettlementPayload,
     SubmitOrder, SubmitOrderOutcome as EngineSubmitOrderOutcome,
 };
 use asceswap_matcher::MatchConfig;
 use asceswap_math::remaining_claim_amount;
-use asceswap_state::ReservationId;
-use asceswap_storage::EngineStore;
+use asceswap_state::{ReservationId, ReservationStatus};
+use asceswap_storage::{EngineStore, StoredOrder, StoredReservation};
 use asceswap_validation::SignatureDomain;
 
 use crate::demo_market_maker::DemoMarketMaker;
 use crate::event::ApiEvent;
 use crate::request::{
-    CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
+    CancelOrderRequest, ListEventsRequest, ListMarketOrdersRequest, ListOrdersRequest,
+    ListReservationsRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
     SettlementPayloadRequest, SubmitOrderRequest,
 };
 use crate::response::{
-    CancelOrderResponse, DepthLevelResponse, MarketDepthResponse, OrderStatusResponse,
-    ReservationActionResponse, SettlementPayloadResponse, SubmitOrderResponse,
+    CancelOrderResponse, DepthLevelResponse, ListEventsResponse, ListMarketsResponse,
+    ListOrdersResponse, ListReservationsResponse, MarketDepthResponse, MarketSummaryResponse,
+    OrderStatusResponse, OrderSummaryResponse, ReservationActionResponse, ReservationLegResponse,
+    ReservationSummaryResponse, SettlementPayloadResponse, SubmitOrderResponse,
     SubmitOrderResponseOutcome,
 };
-use crate::wire::{encode_b256, encode_bytes, encode_u256, ApiMatchKind, ApiOrder};
+use crate::wire::{
+    encode_b256, encode_bytes, encode_u256, ApiMatchKind, ApiOrder, ApiReservationLegRole,
+};
 use crate::ApiError;
 
 #[derive(Clone, Debug)]
@@ -191,6 +198,32 @@ impl<S: EngineStore> OrderbookApiService<S> {
         })
     }
 
+    pub fn list_orders(&self, request: ListOrdersRequest) -> Result<ListOrdersResponse, ApiError> {
+        list_orders_from_store(&self.store, request)
+    }
+
+    pub fn list_market_orders(
+        &self,
+        request: ListMarketOrdersRequest,
+    ) -> Result<ListOrdersResponse, ApiError> {
+        list_orders_from_store(&self.store, request.to_list_orders_request())
+    }
+
+    pub fn list_markets(&self) -> Result<ListMarketsResponse, ApiError> {
+        list_markets_from_store(&self.store)
+    }
+
+    pub fn list_events(&self, request: ListEventsRequest) -> Result<ListEventsResponse, ApiError> {
+        list_events_from_store(&self.store, request)
+    }
+
+    pub fn list_reservations(
+        &self,
+        request: ListReservationsRequest,
+    ) -> Result<ListReservationsResponse, ApiError> {
+        list_reservations_from_store(&self.store, request)
+    }
+
     pub fn market_depth(
         &self,
         request: MarketDepthRequest,
@@ -345,6 +378,199 @@ pub(crate) fn settlement_payload_from_engine(
             .maker_claim_fill_amounts
             .into_iter()
             .map(encode_u256)
+            .collect(),
+    }
+}
+
+pub(crate) fn list_orders_from_store<S: EngineStore>(
+    store: &S,
+    request: ListOrdersRequest,
+) -> Result<ListOrdersResponse, ApiError> {
+    let maker = request.maker()?;
+    let market_id = request.market_id()?;
+    let limit = request.limit()?;
+    let state = request.state.map(Into::into);
+    let claim = request.claim.map(Into::into);
+    let side = request.side.map(Into::into);
+
+    let mut orders = store
+        .load_orders()?
+        .into_iter()
+        .filter(|stored| {
+            let snapshot = &stored.snapshot;
+            maker.map_or(true, |maker| snapshot.order.maker == maker)
+                && market_id.map_or(true, |market_id| snapshot.order.market_id == market_id)
+                && claim.map_or(true, |claim| snapshot.order.claim == claim)
+                && side.map_or(true, |side| snapshot.order.side == side)
+                && state.map_or(true, |state| snapshot.state == state)
+                && request
+                    .resting
+                    .map_or(true, |resting| snapshot.resting == resting)
+        })
+        .collect::<Vec<_>>();
+    sort_orders_for_listing(&mut orders);
+
+    let orders = orders
+        .into_iter()
+        .take(limit)
+        .map(|order| order_summary_from_stored(&order))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(ListOrdersResponse { orders })
+}
+
+pub(crate) fn list_markets_from_store<S: EngineStore>(
+    store: &S,
+) -> Result<ListMarketsResponse, ApiError> {
+    let mut markets = BTreeMap::<String, MarketSummaryResponse>::new();
+    for order in store.load_orders()? {
+        let market_id = encode_b256(order.snapshot.order.market_id);
+        let entry = markets
+            .entry(market_id.clone())
+            .or_insert_with(|| MarketSummaryResponse {
+                market_id,
+                order_count: 0,
+                resting_order_count: 0,
+            });
+        entry.order_count += 1;
+        if order.snapshot.resting {
+            entry.resting_order_count += 1;
+        }
+    }
+
+    Ok(ListMarketsResponse {
+        markets: markets.into_values().collect(),
+    })
+}
+
+pub(crate) fn list_events_from_store<S: EngineStore>(
+    store: &S,
+    request: ListEventsRequest,
+) -> Result<ListEventsResponse, ApiError> {
+    let from_sequence = request.from_sequence();
+    let limit = request.limit()?;
+    let events = store
+        .load_events()?
+        .into_iter()
+        .filter(|event| event.sequence >= from_sequence)
+        .take(limit)
+        .map(|event| ApiEvent::from_engine(event.sequence, &event.event))
+        .collect();
+
+    Ok(ListEventsResponse { events })
+}
+
+pub(crate) fn list_reservations_from_store<S: EngineStore>(
+    store: &S,
+    request: ListReservationsRequest,
+) -> Result<ListReservationsResponse, ApiError> {
+    let status = request.status.map(ReservationStatus::from);
+    let market_id = request.market_id()?;
+    let order_hash = request.order_hash()?;
+    let limit = request.limit()?;
+    let order_markets = store
+        .load_orders()?
+        .into_iter()
+        .map(|order| (order.snapshot.hash, order.snapshot.order.market_id))
+        .collect::<HashMap<_, _>>();
+
+    let mut reservations = store
+        .load_reservations()?
+        .into_iter()
+        .filter(|stored| {
+            let reservation = &stored.reservation;
+            status.map_or(true, |status| reservation.status == status)
+                && order_hash.map_or(true, |order_hash| {
+                    reservation
+                        .legs
+                        .iter()
+                        .any(|leg| leg.order_hash == order_hash)
+                })
+                && market_id.map_or(true, |market_id| {
+                    reservation.legs.iter().any(|leg| {
+                        order_markets
+                            .get(&leg.order_hash)
+                            .map_or(false, |leg_market| *leg_market == market_id)
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    sort_reservations_for_listing(&mut reservations);
+
+    let reservations = reservations
+        .into_iter()
+        .take(limit)
+        .map(reservation_summary_from_stored)
+        .collect();
+
+    Ok(ListReservationsResponse { reservations })
+}
+
+fn sort_orders_for_listing(orders: &mut [StoredOrder]) {
+    orders.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| {
+                right
+                    .snapshot
+                    .accepted_sequence
+                    .cmp(&left.snapshot.accepted_sequence)
+            })
+            .then_with(|| {
+                left.snapshot
+                    .hash
+                    .as_slice()
+                    .cmp(right.snapshot.hash.as_slice())
+            })
+    });
+}
+
+fn order_summary_from_stored(order: &StoredOrder) -> Result<OrderSummaryResponse, ApiError> {
+    let snapshot = &order.snapshot;
+    let remaining = remaining_claim_amount(&snapshot.order, snapshot.filled_claim_amount)
+        .map_err(EngineError::from)?;
+
+    Ok(OrderSummaryResponse {
+        order_hash: encode_b256(snapshot.hash),
+        order: ApiOrder::from(&snapshot.order),
+        state: snapshot.state.into(),
+        filled_claim_amount: encode_u256(snapshot.filled_claim_amount),
+        remaining_claim_amount: encode_u256(remaining),
+        resting: snapshot.resting,
+        accepted_sequence: snapshot.accepted_sequence,
+        created_at: order.created_at,
+        updated_at: order.updated_at,
+    })
+}
+
+fn sort_reservations_for_listing(reservations: &mut [StoredReservation]) {
+    reservations.sort_by(|left, right| {
+        right.updated_at.cmp(&left.updated_at).then_with(|| {
+            left.reservation
+                .id
+                .as_slice()
+                .cmp(right.reservation.id.as_slice())
+        })
+    });
+}
+
+fn reservation_summary_from_stored(reservation: StoredReservation) -> ReservationSummaryResponse {
+    ReservationSummaryResponse {
+        reservation_id: encode_b256(reservation.reservation.id),
+        status: reservation.reservation.status.into(),
+        created_at: reservation.reservation.created_at,
+        expires_at: reservation.reservation.expires_at,
+        updated_at: reservation.updated_at,
+        legs: reservation
+            .reservation
+            .legs
+            .into_iter()
+            .map(|leg| ReservationLegResponse {
+                order_hash: encode_b256(leg.order_hash),
+                role: ApiReservationLegRole::from(leg.role),
+                claim_amount: encode_u256(leg.claim_amount),
+            })
             .collect(),
     }
 }

@@ -15,16 +15,22 @@ pub use demo_market_maker::DemoMarketMaker;
 pub use error::ApiError;
 pub use event::{ApiEvent, ApiEventKind};
 pub use request::{
-    CancelOrderRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
+    CancelOrderRequest, ListEventsRequest, ListMarketOrdersRequest, ListOrdersRequest,
+    ListReservationsRequest, MarketDepthRequest, OrderStatusRequest, ReservationActionRequest,
     SettlementPayloadRequest, SubmitOrderRequest, ValidationContextRequest,
 };
 pub use response::{
-    CancelOrderResponse, DepthLevelResponse, MarketDepthResponse, OrderStatusResponse,
-    ReservationActionResponse, SettlementPayloadResponse, SubmitOrderResponse,
+    CancelOrderResponse, DepthLevelResponse, ListEventsResponse, ListMarketsResponse,
+    ListOrdersResponse, ListReservationsResponse, MarketDepthResponse, MarketSummaryResponse,
+    OrderStatusResponse, OrderSummaryResponse, ReservationActionResponse, ReservationLegResponse,
+    ReservationSummaryResponse, SettlementPayloadResponse, SubmitOrderResponse,
     SubmitOrderResponseOutcome,
 };
 pub use service::OrderbookApiService;
-pub use wire::{ApiClaimSide, ApiMatchKind, ApiOrder, ApiOrderState, ApiSide, ApiSignatureCheck};
+pub use wire::{
+    ApiClaimSide, ApiMatchKind, ApiOrder, ApiOrderState, ApiReservationLegRole,
+    ApiReservationStatus, ApiSide, ApiSignatureCheck,
+};
 
 #[cfg(test)]
 mod tests;
