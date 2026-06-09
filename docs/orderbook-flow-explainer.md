@@ -70,12 +70,44 @@ Conceptually, the client sends:
 ```text
 the signed order fields
 the user's signature
-current validation context(@why is this for)
-whether the order is post-only(what do we mean by post only)
-whether the order may rest if it does not match(why do we need this)
-reservation TTL if it matches(and why this)
+current validation context
+whether the order is post-only
+whether the order may rest if it does not match
+reservation TTL if it matches
 ```
-''' why does an signed order has these additonal field ? I dont rememer polymarket has this kind of thing.
+
+Important: these are not all signed fields.
+
+The signed payload is the `order`. The user signs the order intent: maker, market, claim side, amounts, side, expiration, epoch, fee limit, and salt. Fields like `validation`, `post_only`, `rest_on_no_match`, and `reservation_ttl_secs` are request-level instructions or server-side context.
+
+Why the extra request fields exist:
+
+```text
+signature_bytes
+  The raw wallet signature. It proves order.maker signed this exact order.
+
+validation
+  The context used by the backend to decide whether this signed order is still
+  usable right now. It includes current time, known filled amount, cancellation
+  status, maker epoch, fee rate, and signature status.
+
+post_only
+  A maker-safety flag. If true, the order is allowed to rest on the book only.
+  If it would immediately take existing liquidity, the backend returns
+  PostOnlyWouldCross and does not match it.
+
+rest_on_no_match
+  Controls what happens when the incoming order cannot match immediately.
+  If true, it becomes an open resting order. If false, it becomes inactive.
+  This gives the API support for maker-style orders and taker-only orders.
+
+reservation_ttl_secs
+  How long a created match reservation may remain locked while an executor is
+  expected to submit it onchain. If the executor does not submit in time, the
+  reservation can expire and the liquidity can be released.
+```
+
+For a production API, most of `validation` should be derived by the backend/indexer, not blindly trusted from the client. In this testnet code, the request carries it so tests and demos can run deterministically. This is why it may look different from a Polymarket-style client order: the signed order remains clean, but this backend also asks for validation context and matching instructions in the same `POST /orders` request.
 
 The order itself contains:
 
@@ -176,7 +208,7 @@ Validation checks include:
 maker is not zero
 market is not zero
 amounts are not zero
-price is possible(how you are chceking this)
+price is possible
 order is not expired
 order is not cancelled
 maker epoch matches
@@ -185,16 +217,49 @@ remaining claim amount is nonzero
 signature status is valid if required
 ```
 
+`price is possible` means the order cannot ask for or offer a price above 1 collateral per claim token. Prediction-market claim tokens settle to at most 1 unit of collateral, so a price above 1 is invalid.
+
+The code checks this in `Order::validate_basic()`:
+
+```text
+BUY:
+  maker_amount = collateral offered
+  taker_amount = claim amount wanted
+  valid only if maker_amount <= taker_amount
+
+SELL:
+  maker_amount = claim amount offered
+  taker_amount = collateral wanted
+  valid only if taker_amount <= maker_amount
+```
+
+The actual book price is then:
+
+```text
+price = collateral_amount / claim_amount
+```
+
+encoded as WAD fixed point:
+
+```text
+price_wad = collateral_amount * 1e18 / claim_amount
+```
+
 ### 5. Engine Tries To Match
 
 Before resting the order, the engine asks the matcher:
-(@why this happen does polymarket or any prediction market does the same the things ...I believe if we dont store the order in the orderbook it will somehow become lost after macthing / for UI related purpose to show the ordes / cancel orders n all)
 
 ```text
 Can this incoming order match anything already in the book?
 ```
 
 The incoming order is treated as the taker. Existing resting orders are makers.
+
+This is normal orderbook behavior. When a new order arrives, the engine first checks whether it crosses existing liquidity. If it does, it should execute or reserve against that existing liquidity immediately. Only orders that do not cross should become visible resting liquidity.
+
+The matched order is not lost. It is still stored in `records`, persisted to storage, and connected to a reservation. It simply does not rest in the visible `BTreeMap<Price, VecDeque<OrderHash>>` because it is no longer available liquidity. UI and status APIs should read the order state from `records`/storage, not only from the visible book.
+
+Think of the visible book as "orders available to be matched later". A matched or reserved order is already spoken for, so showing it as open liquidity would be misleading and could allow double matching.
 
 If a match is found:
 
@@ -278,13 +343,29 @@ This is how the backend knows whether an order is:
 
 ```text
 Open
-Reserved(@what do you mean by reserved)
+Reserved
 Submitted
 Filled
 Cancelled
 Inactive
 Rejected
 ```
+
+`Reserved` means the backend has already matched this order with another order, but the match has not been finally settled yet.
+
+In that state:
+
+```text
+the order is locked for a specific reservation
+the reserved fill amount cannot be matched again
+the executor can fetch the settlement payload
+if the executor submits the tx, the order moves to Submitted
+if settlement succeeds, the order becomes Filled or PartiallyFilled
+if the reservation is released or expires, the order is restored to its
+available state when possible
+```
+
+`Reserved` is therefore an offchain lock. It is not the same as "already filled onchain". The order becomes filled only after the onchain settlement succeeds and the backend commits the reservation.
 
 ### `reservations`
 
@@ -800,7 +881,81 @@ HashMap<OrderHash, OrderRecord>
 ```
 
 The backend creates match reservations. The smart contract settles them.
-@ i think the onchaine excuetor should send and batch of reserved tx ready to settle on chain ....for every 10second on the testnet the mathcer to wait for reservation and and call the setlle with proper onchain batche setllement .whata re your thoughts
+
+## Recommended Testnet Executor Flow
+
+Yes, the testnet should have an executor/relayer that drains ready reservations and submits them onchain. That component should be separate from the matcher.
+
+The matcher should not wait every 10 seconds. The matcher should keep accepting orders and creating reservations immediately. The executor should run in the background and poll or subscribe for reservations that are ready to settle.
+
+Good demo architecture:
+
+```text
+Matcher / Engine
+  |
+  | creates Reserved reservation R
+  v
+Storage
+  |
+  | executor polls every N seconds or receives event
+  v
+Executor / Relayer
+  |
+  | fetches settlement payload
+  | simulates matchOrders with eth_call
+  | marks reservation Submitted
+  | sends transaction
+  v
+AsceSwap.matchOrders(...)
+  |
+  | indexer sees success
+  v
+Backend commits reservation
+```
+
+For testnet, a 10 second executor loop is reasonable:
+
+```text
+every 10 seconds:
+  load Reserved reservations
+  skip expired reservations
+  fetch settlement payload
+  simulate the call
+  mark reservation Submitted
+  send matchOrders transaction
+  after confirmation, commit reservation
+  if simulation or tx fails, release the reservation
+```
+
+The reservation TTL should be longer than the polling interval plus expected transaction time. For example, if the executor polls every 10 seconds, a TTL like 60-120 seconds is safer than 10 seconds. Otherwise a reservation can expire while the executor is still waiting for RPC, gas estimation, mempool inclusion, or confirmation.
+
+Batching detail:
+
+```text
+matchOrders already batches makers for one taker:
+  one taker order
+  many maker orders
+  many maker fill amounts
+```
+
+So the first batching level is already inside one reservation: one taker can match against multiple makers in one `matchOrders(...)` call.
+
+If you want to settle many reservations in one chain transaction, that requires either:
+
+```text
+a contract multicall/batch executor, or
+a relayer contract that loops over multiple matchOrders payloads, or
+multiple normal transactions sent by the offchain executor
+```
+
+For the current demo, the simplest reliable approach is:
+
+```text
+one reservation -> one matchOrders transaction
+executor loops every 10 seconds
+```
+
+Later, once this is stable, you can add true multi-reservation batching.
 
 The demo market maker currently creates direct matches only. That is valid for demo if the bot account has the right collateral/claim inventory. For a stronger prediction-market demo, the bot should later support assisted matching:
 
@@ -808,4 +963,3 @@ The demo market maker currently creates direct matches only. That is valid for d
 BUY PAYOFF  -> bot BUY RESIDUAL   -> Mint-Assisted
 SELL PAYOFF -> bot SELL RESIDUAL  -> Merge-Assisted
 ```
-
