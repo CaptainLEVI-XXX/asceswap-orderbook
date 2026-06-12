@@ -12,6 +12,7 @@ members = [
     "crates/asceswap-postgres",
     "crates/asceswap-api",
     "crates/asceswap-server",
+    "crates/asceswap-executor",
 ]
 resolver = "2"
 
@@ -36,7 +37,9 @@ asceswap-server = { path = "crates/asceswap-server" }
 asceswap-storage = { path = "crates/asceswap-storage" }
 asceswap-types = { path = "crates/asceswap-types" }
 asceswap-validation = { path = "crates/asceswap-validation" }
+ethers = { version = "2", default-features = false, features = ["abigen", "rustls"] }
 postgres = "0.19"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }

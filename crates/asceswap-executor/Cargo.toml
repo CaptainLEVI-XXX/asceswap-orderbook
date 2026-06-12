@@ -1,0 +1,16 @@
+[package]
+name = "asceswap-executor"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+asceswap-api.workspace = true
+ethers.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
