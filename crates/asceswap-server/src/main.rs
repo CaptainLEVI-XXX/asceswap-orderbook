@@ -21,10 +21,7 @@ async fn main() {
 async fn run_from_env() -> Result<(), String> {
     let postgres_url = env::var("ASCESWAP_POSTGRES_URL")
         .map_err(|_| "ASCESWAP_POSTGRES_URL is required".to_string())?;
-    let listen_addr = env::var("ASCESWAP_LISTEN_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_string())
-        .parse::<SocketAddr>()
-        .map_err(|error| format!("invalid ASCESWAP_LISTEN_ADDR: {error}"))?;
+    let listen_addr = listen_addr_from_env()?;
     let bootstrap_schema = env_bool("ASCESWAP_BOOTSTRAP_SCHEMA", true)?;
     let signature_domain = SignatureDomain::new(
         env_u256("ASCESWAP_CHAIN_ID")?,
@@ -65,6 +62,30 @@ async fn run_from_env() -> Result<(), String> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|error| format!("server failed: {error}"))
+}
+
+fn listen_addr_from_env() -> Result<SocketAddr, String> {
+    if let Ok(value) = env::var("ASCESWAP_LISTEN_ADDR") {
+        if value.is_empty() {
+            return Err("ASCESWAP_LISTEN_ADDR cannot be empty".to_string());
+        }
+        return value
+            .parse::<SocketAddr>()
+            .map_err(|error| format!("invalid ASCESWAP_LISTEN_ADDR: {error}"));
+    }
+
+    if let Ok(port) = env::var("PORT") {
+        if port.is_empty() {
+            return Err("PORT cannot be empty".to_string());
+        }
+        return format!("0.0.0.0:{port}")
+            .parse::<SocketAddr>()
+            .map_err(|error| format!("invalid PORT: {error}"));
+    }
+
+    "127.0.0.1:8080"
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("invalid default listen address: {error}"))
 }
 
 fn env_u256(name: &str) -> Result<U256, String> {
