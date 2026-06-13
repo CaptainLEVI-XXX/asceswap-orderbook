@@ -1,6 +1,18 @@
 {
   "$schema": "https://schema.railpack.com",
   "provider": "rust",
+  "steps": {
+    "build": {
+      "commands": [
+        "...",
+        "cargo build --release -p asceswap-server -p asceswap-executor -p asceswap-adapter-keeper",
+        "mkdir -p bin",
+        "cp target/release/asceswap-server bin/asceswap-server",
+        "cp target/release/asceswap-executor bin/asceswap-executor",
+        "cp target/release/asceswap-adapter-keeper bin/asceswap-adapter-keeper"
+      ]
+    }
+  },
   "deploy": {
     "startCommand": "./bin/asceswap-server",
     "variables": {
