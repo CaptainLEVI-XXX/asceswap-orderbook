@@ -9,6 +9,8 @@ use asceswap_types::{Address, U256};
 use asceswap_validation::SignatureDomain;
 
 const MARKET_ACTOR_INBOX_CAPACITY: usize = 1_024;
+const DEFAULT_CHAIN_ID: u64 = 421_614;
+const DEFAULT_EXCHANGE_ADDRESS: &str = "0x346457c948EaA86Afa9392B9E790bE2E42c6ebD6";
 
 #[tokio::main]
 async fn main() {
@@ -24,8 +26,8 @@ async fn run_from_env() -> Result<(), String> {
     let listen_addr = listen_addr_from_env()?;
     let bootstrap_schema = env_bool("ASCESWAP_BOOTSTRAP_SCHEMA", true)?;
     let signature_domain = SignatureDomain::new(
-        env_u256("ASCESWAP_CHAIN_ID")?,
-        env_address("ASCESWAP_EXCHANGE_ADDRESS")?,
+        env_u256_default("ASCESWAP_CHAIN_ID", U256::from(DEFAULT_CHAIN_ID))?,
+        env_address_default("ASCESWAP_EXCHANGE_ADDRESS", DEFAULT_EXCHANGE_ADDRESS)?,
     );
 
     let mut store =
@@ -88,16 +90,6 @@ fn listen_addr_from_env() -> Result<SocketAddr, String> {
         .map_err(|error| format!("invalid default listen address: {error}"))
 }
 
-fn env_u256(name: &str) -> Result<U256, String> {
-    let value = env::var(name).map_err(|_| format!("{name} is required"))?;
-    if value.is_empty() {
-        return Err(format!("{name} cannot be empty"));
-    }
-
-    U256::from_str_radix(&value, 10)
-        .map_err(|_| format!("invalid {name}: expected decimal uint256"))
-}
-
 fn env_u256_default(name: &str, default: U256) -> Result<U256, String> {
     match env::var(name) {
         Ok(value) => {
@@ -156,8 +148,15 @@ fn env_private_key(name: &str) -> Result<Option<[u8; 32]>, String> {
     Ok(Some(bytes))
 }
 
-fn env_address(name: &str) -> Result<Address, String> {
-    let value = env::var(name).map_err(|_| format!("{name} is required"))?;
+fn env_address_default(name: &str, default: &str) -> Result<Address, String> {
+    match env::var(name) {
+        Ok(value) if value.is_empty() => Err(format!("{name} cannot be empty")),
+        Ok(value) => parse_address_value(name, &value),
+        Err(_) => parse_address_value(name, default),
+    }
+}
+
+fn parse_address_value(name: &str, value: &str) -> Result<Address, String> {
     let raw = value
         .strip_prefix("0x")
         .ok_or_else(|| format!("invalid {name}: missing 0x prefix"))?;

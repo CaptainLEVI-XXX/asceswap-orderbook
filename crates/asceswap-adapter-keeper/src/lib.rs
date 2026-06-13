@@ -24,6 +24,15 @@ abigen!(
 
 type KeeperClient = SignerMiddleware<Provider<Http>, LocalWallet>;
 
+const DEFAULT_RPC_URL: &str = "https://sepolia-rollup.arbitrum.io/rpc";
+const DEFAULT_CHAIN_ID: u64 = 421_614;
+const DEFAULT_TARGETS: &str = concat!(
+    "aave-usdc-borrow=0x3B9D6fF6d0C798317f3B51681e335f5b07cbD70F:",
+    "0x2f56d7c26e665a04dd24404cdd841d6fcd7fd402a3b127760e2598c64d2df369;",
+    "arbitrum-gas=0x81aA57736801E33f8ef059F79B8F4332416D4DB8:",
+    "0xfe77931a0aa6baee55370819b38cb10feb3f03e2c0053a9a37e3213a471b7f28"
+);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeeperConfig {
     pub rpc_url: String,
@@ -42,8 +51,11 @@ impl KeeperConfig {
     }
 
     fn from_getter(get: impl Fn(&str) -> Option<String>) -> Result<Self, KeeperError> {
-        let rpc_url = required(&get, "ASCESWAP_KEEPER_RPC_URL")
-            .or_else(|_| required(&get, "ASCESWAP_RPC_URL"))?;
+        let rpc_url = match optional_string(&get, "ASCESWAP_KEEPER_RPC_URL")? {
+            Some(value) => value,
+            None => optional_string(&get, "ASCESWAP_RPC_URL")?
+                .unwrap_or_else(|| DEFAULT_RPC_URL.to_string()),
+        };
         let private_key = required(&get, "ASCESWAP_KEEPER_PRIVATE_KEY")?;
         if !private_key.starts_with("0x") {
             return Err(KeeperError::Config(
@@ -54,8 +66,11 @@ impl KeeperConfig {
         Ok(Self {
             rpc_url,
             private_key,
-            chain_id: parse_u64_env(&get, "ASCESWAP_KEEPER_CHAIN_ID", 421_614)?,
-            targets: parse_targets(&required(&get, "ASCESWAP_KEEPER_TARGETS")?)?,
+            chain_id: parse_u64_env(&get, "ASCESWAP_KEEPER_CHAIN_ID", DEFAULT_CHAIN_ID)?,
+            targets: parse_targets(
+                &optional_string(&get, "ASCESWAP_KEEPER_TARGETS")?
+                    .unwrap_or_else(|| DEFAULT_TARGETS.to_string()),
+            )?,
             interval: Duration::from_secs(parse_u64_env(
                 &get,
                 "ASCESWAP_KEEPER_INTERVAL_SECS",
@@ -269,6 +284,17 @@ fn required(
         .ok_or_else(|| KeeperError::Config(format!("{name} is required")))
 }
 
+fn optional_string(
+    get: &impl Fn(&str) -> Option<String>,
+    name: &'static str,
+) -> Result<Option<String>, KeeperError> {
+    match get(name) {
+        Some(value) if !value.is_empty() => Ok(Some(value)),
+        Some(_) => Err(KeeperError::Config(format!("{name} cannot be empty"))),
+        None => Ok(None),
+    }
+}
+
 fn parse_u64_env(
     get: &impl Fn(&str) -> Option<String>,
     name: &'static str,
@@ -355,11 +381,7 @@ mod tests {
 
     fn config_getter(name: &str) -> Option<String> {
         match name {
-            "ASCESWAP_KEEPER_RPC_URL" => Some("https://sepolia-rollup.arbitrum.io/rpc".to_string()),
             "ASCESWAP_KEEPER_PRIVATE_KEY" => Some(format!("0x{}", "11".repeat(32))),
-            "ASCESWAP_KEEPER_TARGETS" => Some(format!(
-                "aave={AAVE_ADAPTER}:{AAVE_MARKET_ID};gas={GAS_ADAPTER}:{GAS_MARKET_ID}"
-            )),
             _ => None,
         }
     }
@@ -374,6 +396,7 @@ mod tests {
         assert_eq!(config.confirmations, 1);
         assert!(!config.dry_run);
         assert_eq!(config.targets.len(), 2);
+        assert_eq!(config.rpc_url, DEFAULT_RPC_URL);
     }
 
     #[test]

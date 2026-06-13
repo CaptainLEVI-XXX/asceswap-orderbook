@@ -68,6 +68,11 @@ abigen!(
 type ExecutorClient = SignerMiddleware<Provider<Http>, LocalWallet>;
 type ContractOrder = (U256, Address, [u8; 32], u8, U256, U256, u8, U256, U256, u16);
 
+const DEFAULT_API_URL: &str = "http://api.railway.internal:8080";
+const DEFAULT_RPC_URL: &str = "https://sepolia-rollup.arbitrum.io/rpc";
+const DEFAULT_EXCHANGE_ADDRESS: &str = "0x346457c948EaA86Afa9392B9E790bE2E42c6ebD6";
+const DEFAULT_CHAIN_ID: u64 = 421_614;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorConfig {
     pub api_url: String,
@@ -88,11 +93,15 @@ impl ExecutorConfig {
     }
 
     fn from_getter(get: impl Fn(&str) -> Option<String>) -> Result<Self, ExecutorError> {
-        let api_url = required(&get, "ASCESWAP_API_URL")?
+        let api_url = optional_string(&get, "ASCESWAP_API_URL", DEFAULT_API_URL)?
             .trim_end_matches('/')
             .to_string();
-        let rpc_url = required(&get, "ASCESWAP_RPC_URL")?;
-        let exchange_address = parse_address_env(&required(&get, "ASCESWAP_EXCHANGE_ADDRESS")?)?;
+        let rpc_url = optional_string(&get, "ASCESWAP_RPC_URL", DEFAULT_RPC_URL)?;
+        let exchange_address = parse_address_env(&optional_string(
+            &get,
+            "ASCESWAP_EXCHANGE_ADDRESS",
+            DEFAULT_EXCHANGE_ADDRESS,
+        )?)?;
         let executor_private_key = required(&get, "ASCESWAP_EXECUTOR_PRIVATE_KEY")?;
         if !executor_private_key.starts_with("0x") {
             return Err(ExecutorError::Config(
@@ -105,7 +114,7 @@ impl ExecutorConfig {
             rpc_url,
             exchange_address,
             executor_private_key,
-            chain_id: parse_u64_env(&get, "ASCESWAP_CHAIN_ID", 421_614)?,
+            chain_id: parse_u64_env(&get, "ASCESWAP_CHAIN_ID", DEFAULT_CHAIN_ID)?,
             poll_interval: Duration::from_secs(parse_u64_env(
                 &get,
                 "ASCESWAP_EXECUTOR_POLL_SECS",
@@ -452,6 +461,18 @@ fn required(
         .ok_or_else(|| ExecutorError::Config(format!("{name} is required")))
 }
 
+fn optional_string(
+    get: &impl Fn(&str) -> Option<String>,
+    name: &'static str,
+    default: &'static str,
+) -> Result<String, ExecutorError> {
+    match get(name) {
+        Some(value) if !value.is_empty() => Ok(value),
+        Some(_) => Err(ExecutorError::Config(format!("{name} cannot be empty"))),
+        None => Ok(default.to_string()),
+    }
+}
+
 fn parse_u64_env(
     get: &impl Fn(&str) -> Option<String>,
     name: &'static str,
@@ -551,11 +572,6 @@ mod tests {
 
     fn config_getter(name: &str) -> Option<String> {
         match name {
-            "ASCESWAP_API_URL" => Some("http://localhost:8080/".to_string()),
-            "ASCESWAP_RPC_URL" => Some("https://sepolia-rollup.arbitrum.io/rpc".to_string()),
-            "ASCESWAP_EXCHANGE_ADDRESS" => {
-                Some("0x346457c948EaA86Afa9392B9E790bE2E42c6ebD6".to_string())
-            }
             "ASCESWAP_EXECUTOR_PRIVATE_KEY" => Some(format!("0x{}", "11".repeat(32))),
             _ => None,
         }
@@ -565,13 +581,32 @@ mod tests {
     fn config_uses_safe_defaults_and_normalizes_api_url() {
         let config = ExecutorConfig::from_getter(config_getter).unwrap();
 
-        assert_eq!(config.api_url, "http://localhost:8080");
+        assert_eq!(config.api_url, DEFAULT_API_URL);
+        assert_eq!(config.rpc_url, DEFAULT_RPC_URL);
+        assert_eq!(
+            config.exchange_address,
+            DEFAULT_EXCHANGE_ADDRESS.parse::<Address>().unwrap()
+        );
         assert_eq!(config.chain_id, 421_614);
         assert_eq!(config.poll_interval, Duration::from_secs(10));
         assert_eq!(config.reservation_limit, 20);
         assert_eq!(config.confirmations, 1);
         assert!(!config.dry_run);
         assert!(!config.release_on_simulation_failure);
+    }
+
+    #[test]
+    fn config_normalizes_overridden_api_url() {
+        let config = ExecutorConfig::from_getter(|name| {
+            if name == "ASCESWAP_API_URL" {
+                Some("http://localhost:8080/".to_string())
+            } else {
+                config_getter(name)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(config.api_url, "http://localhost:8080");
     }
 
     #[test]
