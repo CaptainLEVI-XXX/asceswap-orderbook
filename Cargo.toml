@@ -13,6 +13,7 @@ members = [
     "crates/asceswap-api",
     "crates/asceswap-server",
     "crates/asceswap-executor",
+    "crates/asceswap-adapter-keeper",
 ]
 resolver = "2"
 
@@ -26,6 +27,7 @@ rust-version = "1.76"
 alloy-primitives = { version = "0.8", features = ["k256"] }
 axum = { version = "0.7", features = ["ws"] }
 asceswap-api = { path = "crates/asceswap-api" }
+asceswap-adapter-keeper = { path = "crates/asceswap-adapter-keeper" }
 asceswap-engine = { path = "crates/asceswap-engine" }
 asceswap-math = { path = "crates/asceswap-math" }
 asceswap-matcher = { path = "crates/asceswap-matcher" }

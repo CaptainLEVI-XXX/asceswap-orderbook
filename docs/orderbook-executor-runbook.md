@@ -151,9 +151,64 @@ Market actor
 
 The executor should run with one funded wallet. That wallet pays gas for settlement transactions.
 
+## Adapter Keeper
+
+The adapter keeper is a separate background process that keeps oracle adapter samples fresh.
+
+It calls:
+
+```text
+poke(bytes32 marketId)
+```
+
+on each configured adapter target. This is not order matching. It only records oracle samples for settlement TWAP and frontend chart data.
+
+Run it with:
+
+```bash
+cargo run -p asceswap-adapter-keeper
+```
+
+Target format:
+
+```bash
+export ASCESWAP_KEEPER_TARGETS="label=adapterAddress:marketId;second-label=adapterAddress:marketId"
+```
+
+Current demo targets:
+
+```bash
+export ASCESWAP_KEEPER_TARGETS="aave-usdc-borrow=0x3B9D6fF6d0C798317f3B51681e335f5b07cbD70F:0x2f56d7c26e665a04dd24404cdd841d6fcd7fd402a3b127760e2598c64d2df369;arbitrum-gas=0x81aA57736801E33f8ef059F79B8F4332416D4DB8:0xfe77931a0aa6baee55370819b38cb10feb3f03e2c0053a9a37e3213a471b7f28"
+```
+
+Required variables:
+
+```bash
+export ASCESWAP_KEEPER_RPC_URL="https://sepolia-rollup.arbitrum.io/rpc"
+export ASCESWAP_KEEPER_PRIVATE_KEY="0x..."
+export ASCESWAP_KEEPER_TARGETS="..."
+```
+
+Optional variables:
+
+```bash
+export ASCESWAP_KEEPER_CHAIN_ID="421614"
+export ASCESWAP_KEEPER_INTERVAL_SECS="300"
+export ASCESWAP_KEEPER_RETRY_SECS="60"
+export ASCESWAP_KEEPER_CONFIRMATIONS="1"
+export ASCESWAP_KEEPER_DRY_RUN="false"
+```
+
+For a no-transaction smoke test:
+
+```bash
+ASCESWAP_KEEPER_DRY_RUN=true cargo run -p asceswap-adapter-keeper
+```
+
+Use a separate funded keeper wallet if possible. That avoids nonce conflicts with the order settlement executor.
+
 ## Current MVP Limitation
 
 The executor currently logs the transaction hash, but it does not persist an execution job table with tx hashes and retry metadata.
 
 That is acceptable for a controlled testnet demo. Before real public usage, add durable execution tracking so the system can recover cleanly if the executor process restarts after submitting a transaction but before committing the reservation.
-
