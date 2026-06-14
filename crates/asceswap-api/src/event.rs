@@ -38,6 +38,8 @@ pub struct ApiEvent {
     pub remaining_claim_amount: Option<String>,
     pub maker_count: Option<usize>,
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
 }
 
 impl ApiEvent {
@@ -157,6 +159,7 @@ impl ApiEvent {
             remaining_claim_amount: None,
             maker_count: None,
             reason: None,
+            tx_hash: None,
         }
     }
 }

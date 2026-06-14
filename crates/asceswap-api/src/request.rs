@@ -122,11 +122,20 @@ impl CancelOrderRequest {
 pub struct ReservationActionRequest {
     pub reservation_id: String,
     pub now: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
 }
 
 impl ReservationActionRequest {
     pub fn reservation_id(&self) -> Result<asceswap_state::ReservationId, ApiError> {
         parse_b256("reservation_id", &self.reservation_id)
+    }
+
+    pub fn tx_hash(&self) -> Result<Option<asceswap_types::B256>, ApiError> {
+        self.tx_hash
+            .as_deref()
+            .map(|value| parse_b256("tx_hash", value))
+            .transpose()
     }
 }
 

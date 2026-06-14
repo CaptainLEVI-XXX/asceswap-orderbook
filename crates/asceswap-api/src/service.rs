@@ -8,6 +8,7 @@ use asceswap_matcher::MatchConfig;
 use asceswap_math::remaining_claim_amount;
 use asceswap_state::{ReservationId, ReservationStatus};
 use asceswap_storage::{EngineStore, StoredOrder, StoredReservation};
+use asceswap_types::B256;
 use asceswap_validation::SignatureDomain;
 
 use crate::demo_market_maker::DemoMarketMaker;
@@ -136,9 +137,13 @@ impl<S: EngineStore> OrderbookApiService<S> {
         request: ReservationActionRequest,
     ) -> Result<ReservationActionResponse, ApiError> {
         let reservation_id = request.reservation_id()?;
+        let tx_hash = request.tx_hash()?;
         let result = self
             .engine
             .mark_reservation_submitted(reservation_id, request.now)?;
+        if let Some(tx_hash) = tx_hash {
+            record_reservation_tx_hash(&mut self.store, reservation_id, tx_hash, request.now)?;
+        }
         self.reservation_response(request.now, result)
     }
 
@@ -256,9 +261,14 @@ impl<S: EngineStore> OrderbookApiService<S> {
         now: u64,
         result: ReservationUpdateResult,
     ) -> Result<ReservationActionResponse, ApiError> {
-        let events = self.persist_and_project_events(now, &result.events)?;
+        let mut events = self.persist_and_project_events(now, &result.events)?;
+        let tx_hash = reservation_tx_hash(&self.store, result.reservation_id)?;
+        if let Some(tx_hash) = tx_hash {
+            attach_tx_hash_to_events(&mut events, result.reservation_id, tx_hash);
+        }
         Ok(ReservationActionResponse {
             reservation_id: encode_b256(result.reservation_id),
+            tx_hash: tx_hash.map(encode_b256),
             events,
         })
     }
@@ -449,12 +459,20 @@ pub(crate) fn list_events_from_store<S: EngineStore>(
 ) -> Result<ListEventsResponse, ApiError> {
     let from_sequence = request.from_sequence();
     let limit = request.limit()?;
+    let reservation_tx_hashes = reservation_tx_hashes(store)?;
     let events = store
         .load_events()?
         .into_iter()
         .filter(|event| event.sequence >= from_sequence)
         .take(limit)
-        .map(|event| ApiEvent::from_engine(event.sequence, &event.event))
+        .map(|event| {
+            let reservation_id = engine_event_reservation_id(&event.event);
+            let mut api_event = ApiEvent::from_engine(event.sequence, &event.event);
+            if let Some(tx_hash) = reservation_id.and_then(|id| reservation_tx_hashes.get(&id)) {
+                api_event.tx_hash = Some(encode_b256(*tx_hash));
+            }
+            api_event
+        })
         .collect();
 
     Ok(ListEventsResponse { events })
@@ -559,6 +577,7 @@ fn reservation_summary_from_stored(reservation: StoredReservation) -> Reservatio
     ReservationSummaryResponse {
         reservation_id: encode_b256(reservation.reservation.id),
         status: reservation.reservation.status.into(),
+        tx_hash: reservation.tx_hash.map(encode_b256),
         created_at: reservation.reservation.created_at,
         expires_at: reservation.reservation.expires_at,
         updated_at: reservation.updated_at,
@@ -572,6 +591,77 @@ fn reservation_summary_from_stored(reservation: StoredReservation) -> Reservatio
                 claim_amount: encode_u256(leg.claim_amount),
             })
             .collect(),
+    }
+}
+
+pub(crate) fn record_reservation_tx_hash<S: EngineStore>(
+    store: &mut S,
+    reservation_id: ReservationId,
+    tx_hash: B256,
+    now: u64,
+) -> Result<(), ApiError> {
+    if let Some(mut stored) = store
+        .load_reservations()?
+        .into_iter()
+        .find(|reservation| reservation.reservation.id == reservation_id)
+    {
+        stored.tx_hash = Some(tx_hash);
+        stored.updated_at = now;
+        store.put_reservation(stored)?;
+    }
+
+    Ok(())
+}
+
+fn reservation_tx_hash<S: EngineStore>(
+    store: &S,
+    reservation_id: ReservationId,
+) -> Result<Option<B256>, ApiError> {
+    Ok(store
+        .load_reservations()?
+        .into_iter()
+        .find(|stored| stored.reservation.id == reservation_id)
+        .and_then(|stored| stored.tx_hash))
+}
+
+fn reservation_tx_hashes<S: EngineStore>(
+    store: &S,
+) -> Result<HashMap<ReservationId, B256>, ApiError> {
+    Ok(store
+        .load_reservations()?
+        .into_iter()
+        .filter_map(|stored| {
+            stored
+                .tx_hash
+                .map(|tx_hash| (stored.reservation.id, tx_hash))
+        })
+        .collect())
+}
+
+pub(crate) fn attach_tx_hash_to_events(
+    events: &mut [ApiEvent],
+    reservation_id: ReservationId,
+    tx_hash: B256,
+) {
+    let reservation_id = encode_b256(reservation_id);
+    let tx_hash = encode_b256(tx_hash);
+    for event in events {
+        if event.reservation_id.as_deref() == Some(reservation_id.as_str()) {
+            event.tx_hash = Some(tx_hash.clone());
+        }
+    }
+}
+
+fn engine_event_reservation_id(event: &EngineEvent) -> Option<ReservationId> {
+    match event {
+        EngineEvent::OrderReserved { reservation_id, .. }
+        | EngineEvent::OrderSubmitted { reservation_id, .. }
+        | EngineEvent::ReservationCreated { reservation_id, .. }
+        | EngineEvent::ReservationSubmitted { reservation_id }
+        | EngineEvent::ReservationReleased { reservation_id }
+        | EngineEvent::ReservationExpired { reservation_id }
+        | EngineEvent::ReservationCommitted { reservation_id } => Some(*reservation_id),
+        _ => None,
     }
 }
 

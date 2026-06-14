@@ -390,6 +390,8 @@ where
 #[derive(Debug, Deserialize)]
 struct ReservationActionBody {
     now: u64,
+    #[serde(default)]
+    tx_hash: Option<String>,
 }
 
 async fn actor_mark_reservation_submitted(
@@ -449,6 +451,7 @@ where
     let request = ReservationActionRequest {
         reservation_id,
         now: body.now,
+        tx_hash: body.tx_hash,
     };
     let response = action(state.service.clone(), request).await?;
     publish_actor_events(&state, &response.events);
@@ -526,6 +529,7 @@ where
     let request = ReservationActionRequest {
         reservation_id,
         now: body.now,
+        tx_hash: body.tx_hash,
     };
     let response = {
         let mut service = state.service.lock().await;

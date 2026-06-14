@@ -162,12 +162,7 @@ fn demo_counter_order_terms(
                 .checked_sub(taker_price.wad())
                 .ok_or(ApiError::Engine(EngineError::ArithmeticOverflow))?;
             let maker_amount = mul_div_ceil(required_price, claim_amount, WAD)?;
-            Ok((
-                claim.opposite(),
-                Side::Buy,
-                maker_amount,
-                claim_amount,
-            ))
+            Ok((claim.opposite(), Side::Buy, maker_amount, claim_amount))
         }
         Side::Sell => Ok((claim, Side::Buy, collateral_amount, claim_amount)),
     }

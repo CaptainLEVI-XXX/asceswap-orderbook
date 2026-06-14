@@ -48,18 +48,32 @@ ON CONFLICT (order_hash) DO UPDATE SET
     filled_claim_amount = EXCLUDED.filled_claim_amount,
     resting = EXCLUDED.resting,
     accepted_sequence = EXCLUDED.accepted_sequence,
-    created_at = EXCLUDED.created_at,
-    updated_at = EXCLUDED.updated_at
+    created_at = orders.created_at,
+    updated_at = CASE
+        WHEN orders.order_state IS DISTINCT FROM EXCLUDED.order_state
+            OR orders.filled_claim_amount IS DISTINCT FROM EXCLUDED.filled_claim_amount
+            OR orders.resting IS DISTINCT FROM EXCLUDED.resting
+            OR orders.accepted_sequence IS DISTINCT FROM EXCLUDED.accepted_sequence
+        THEN EXCLUDED.updated_at
+        ELSE orders.updated_at
+    END
 "#;
 
 const UPSERT_RESERVATION_SQL: &str = r#"
-INSERT INTO reservations (reservation_id, status, created_at, expires_at, updated_at)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO reservations (reservation_id, status, created_at, expires_at, updated_at, tx_hash)
+VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (reservation_id) DO UPDATE SET
     status = EXCLUDED.status,
-    created_at = EXCLUDED.created_at,
+    created_at = reservations.created_at,
     expires_at = EXCLUDED.expires_at,
-    updated_at = EXCLUDED.updated_at
+    updated_at = CASE
+        WHEN reservations.status IS DISTINCT FROM EXCLUDED.status
+            OR reservations.expires_at IS DISTINCT FROM EXCLUDED.expires_at
+            OR reservations.tx_hash IS DISTINCT FROM COALESCE(EXCLUDED.tx_hash, reservations.tx_hash)
+        THEN EXCLUDED.updated_at
+        ELSE reservations.updated_at
+    END,
+    tx_hash = COALESCE(EXCLUDED.tx_hash, reservations.tx_hash)
 "#;
 
 const INSERT_RESERVATION_LEG_SQL: &str = r#"
@@ -95,7 +109,7 @@ ORDER BY order_hash
 "#;
 
 const SELECT_RESERVATIONS_SQL: &str = r#"
-SELECT reservation_id, status, created_at, expires_at, updated_at
+SELECT reservation_id, status, created_at, expires_at, updated_at, tx_hash
 FROM reservations
 ORDER BY reservation_id
 "#;
@@ -548,6 +562,10 @@ fn load_reservations_from_client(
             .map(|value| i64_to_u64("reservations.expires_at", value))
             .transpose()?;
         let updated_at = i64_to_u64("reservations.updated_at", row.get(4))?;
+        let tx_hash = row
+            .get::<_, Option<Vec<u8>>>(5)
+            .map(|value| b256_from_bytes("reservations.tx_hash", value))
+            .transpose()?;
         let legs = legs_by_reservation.remove(&id).unwrap_or_default();
 
         reservations.push(StoredReservation {
@@ -560,6 +578,7 @@ fn load_reservations_from_client(
             },
             created_at,
             updated_at,
+            tx_hash,
         });
     }
 
@@ -739,6 +758,7 @@ fn write_reservation(
         None => None,
     };
     let updated_at = u64_to_i64("reservation.updated_at", reservation.updated_at)?;
+    let tx_hash = reservation.tx_hash.map(b256_to_bytes);
 
     client
         .execute(
@@ -749,6 +769,7 @@ fn write_reservation(
                 &created_at,
                 &expires_at,
                 &updated_at,
+                &tx_hash,
             ],
         )
         .map_err(db_error)?;

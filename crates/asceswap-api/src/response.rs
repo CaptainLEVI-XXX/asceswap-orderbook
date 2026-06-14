@@ -53,6 +53,8 @@ pub struct CancelOrderResponse {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReservationActionResponse {
     pub reservation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
     pub events: Vec<ApiEvent>,
 }
 
@@ -126,6 +128,8 @@ pub struct ReservationLegResponse {
 pub struct ReservationSummaryResponse {
     pub reservation_id: String,
     pub status: ApiReservationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
     pub created_at: u64,
     pub expires_at: Option<u64>,
     pub updated_at: u64,

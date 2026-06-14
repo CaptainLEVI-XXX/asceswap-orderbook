@@ -10,9 +10,10 @@ use crate::wire::{encode_b256, encode_bytes, encode_u256};
 use crate::{
     spawn_actor_orderbook_api_service_with_capacity, ActorOrderbookApiService, ApiClaimSide,
     ApiError, ApiEventKind, ApiOrder, ApiOrderState, ApiSide, ApiSignatureCheck,
-    CancelOrderRequest, DemoMarketMaker, MarketDepthRequest, OrderStatusRequest,
-    OrderbookApiService, ReservationActionRequest, SettlementPayloadRequest, SubmitOrderRequest,
-    SubmitOrderResponseOutcome, ValidationContextRequest,
+    CancelOrderRequest, DemoMarketMaker, ListEventsRequest, ListReservationsRequest,
+    MarketDepthRequest, OrderStatusRequest, OrderbookApiService, ReservationActionRequest,
+    SettlementPayloadRequest, SubmitOrderRequest, SubmitOrderResponseOutcome,
+    ValidationContextRequest,
 };
 
 fn market_id() -> B256 {
@@ -216,16 +217,26 @@ fn crossed_order_can_be_submitted_and_committed_through_api() {
         .unwrap();
     assert_eq!(fetched_settlement, settlement);
 
-    service
+    let tx_hash = encode_b256(B256::repeat_byte(9));
+    let submitted = service
         .mark_reservation_submitted(ReservationActionRequest {
             reservation_id: reservation_id.clone(),
             now: 102,
+            tx_hash: Some(tx_hash.clone()),
         })
         .unwrap();
+    assert_eq!(submitted.tx_hash.as_deref(), Some(tx_hash.as_str()));
+    assert!(submitted
+        .events
+        .iter()
+        .any(|event| event.kind == ApiEventKind::ReservationSubmitted
+            && event.tx_hash.as_deref() == Some(tx_hash.as_str())));
+
     let commit = service
         .commit_reservation(ReservationActionRequest {
-            reservation_id,
+            reservation_id: reservation_id.clone(),
             now: 103,
+            tx_hash: None,
         })
         .unwrap();
 
@@ -236,6 +247,26 @@ fn crossed_order_can_be_submitted_and_committed_through_api() {
         })
         .unwrap();
     assert_eq!(status.state, ApiOrderState::Filled);
+
+    let reservations = service
+        .list_reservations(ListReservationsRequest::default())
+        .unwrap();
+    assert_eq!(
+        reservations.reservations[0].tx_hash.as_deref(),
+        Some(tx_hash.as_str())
+    );
+
+    let events = service
+        .list_events(ListEventsRequest {
+            from_sequence: Some(0),
+            limit: None,
+        })
+        .unwrap();
+    assert!(events
+        .events
+        .iter()
+        .any(|event| event.kind == ApiEventKind::ReservationCommitted
+            && event.tx_hash.as_deref() == Some(tx_hash.as_str())));
 }
 
 #[test]
@@ -403,12 +434,14 @@ fn product_flow_verifies_signature_persists_matches_commits_and_recovers() {
         .mark_reservation_submitted(ReservationActionRequest {
             reservation_id: reservation_id.clone(),
             now: 102,
+            tx_hash: None,
         })
         .unwrap();
     service
         .commit_reservation(ReservationActionRequest {
             reservation_id,
             now: 103,
+            tx_hash: None,
         })
         .unwrap();
 
@@ -624,6 +657,7 @@ async fn actor_service_matches_and_commits_reservation() {
         .mark_reservation_submitted(ReservationActionRequest {
             reservation_id: reservation_id.clone(),
             now: 102,
+            tx_hash: None,
         })
         .await
         .unwrap();
@@ -631,6 +665,7 @@ async fn actor_service_matches_and_commits_reservation() {
         .commit_reservation(ReservationActionRequest {
             reservation_id,
             now: 103,
+            tx_hash: None,
         })
         .await
         .unwrap();

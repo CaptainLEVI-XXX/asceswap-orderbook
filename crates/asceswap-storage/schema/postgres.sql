@@ -33,8 +33,11 @@ CREATE TABLE IF NOT EXISTS reservations (
     status TEXT NOT NULL,
     created_at BIGINT NOT NULL,
     expires_at BIGINT,
-    updated_at BIGINT NOT NULL
+    updated_at BIGINT NOT NULL,
+    tx_hash BYTEA CHECK (tx_hash IS NULL OR octet_length(tx_hash) = 32)
 );
+
+ALTER TABLE reservations ADD COLUMN IF NOT EXISTS tx_hash BYTEA CHECK (tx_hash IS NULL OR octet_length(tx_hash) = 32);
 
 CREATE TABLE IF NOT EXISTS reservation_legs (
     reservation_id BYTEA NOT NULL REFERENCES reservations (reservation_id),

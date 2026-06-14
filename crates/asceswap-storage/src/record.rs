@@ -1,6 +1,6 @@
 use asceswap_engine::{EngineEvent, EngineSnapshot, OrderSnapshot};
 use asceswap_state::{Reservation, ReservationId};
-use asceswap_types::{OrderHash, U256};
+use asceswap_types::{OrderHash, B256, U256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredOrder {
@@ -28,6 +28,7 @@ pub struct StoredReservation {
     pub reservation: Reservation,
     pub created_at: u64,
     pub updated_at: u64,
+    pub tx_hash: Option<B256>,
 }
 
 impl StoredReservation {
@@ -36,6 +37,7 @@ impl StoredReservation {
             reservation,
             created_at: now,
             updated_at: now,
+            tx_hash: None,
         }
     }
 

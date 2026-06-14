@@ -22,9 +22,9 @@ use crate::response::{
     ReservationActionResponse, SettlementPayloadResponse, SubmitOrderResponse,
 };
 use crate::service::{
-    list_events_from_store, list_markets_from_store, list_orders_from_store,
-    list_reservations_from_store, project_events, settlement_payload_from_engine,
-    submit_outcome_from_engine,
+    attach_tx_hash_to_events, list_events_from_store, list_markets_from_store,
+    list_orders_from_store, list_reservations_from_store, project_events,
+    record_reservation_tx_hash, settlement_payload_from_engine, submit_outcome_from_engine,
 };
 use crate::wire::{encode_b256, encode_u256};
 use crate::{ApiError, ApiEvent};
@@ -504,10 +504,14 @@ impl<S: EngineStore> ActorOrderbookApiService<S> {
         request: ReservationActionRequest,
     ) -> Result<ReservationActionResponse, ApiError> {
         let reservation_id = request.reservation_id()?;
+        let tx_hash = request.tx_hash()?;
         let result = self
             .router
             .mark_reservation_submitted(reservation_id, request.now)
             .await?;
+        if let Some(tx_hash) = tx_hash {
+            record_reservation_tx_hash(&mut self.store, reservation_id, tx_hash, request.now)?;
+        }
         self.reservation_response(request.now, result).await
     }
 
@@ -656,9 +660,19 @@ impl<S: EngineStore> ActorOrderbookApiService<S> {
         now: u64,
         result: ReservationUpdateResult,
     ) -> Result<ReservationActionResponse, ApiError> {
-        let events = self.persist_and_project_events(now, &result.events).await?;
+        let mut events = self.persist_and_project_events(now, &result.events).await?;
+        let tx_hash = self
+            .store
+            .load_reservations()?
+            .into_iter()
+            .find(|stored| stored.reservation.id == result.reservation_id)
+            .and_then(|stored| stored.tx_hash);
+        if let Some(tx_hash) = tx_hash {
+            attach_tx_hash_to_events(&mut events, result.reservation_id, tx_hash);
+        }
         Ok(ReservationActionResponse {
             reservation_id: encode_b256(result.reservation_id),
+            tx_hash: tx_hash.map(encode_b256),
             events,
         })
     }

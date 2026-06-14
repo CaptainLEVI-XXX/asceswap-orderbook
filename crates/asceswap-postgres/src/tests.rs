@@ -416,12 +416,14 @@ fn live_postgres_product_flow_verifies_api_signature_storage_and_market_maker_ma
             .mark_reservation_submitted(ReservationActionRequest {
                 reservation_id: reservation_id.clone(),
                 now: 102,
+                tx_hash: None,
             })
             .unwrap();
         service
             .commit_reservation(ReservationActionRequest {
                 reservation_id,
                 now: 103,
+                tx_hash: None,
             })
             .unwrap();
 

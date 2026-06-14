@@ -221,12 +221,14 @@ impl Executor {
             return Ok(());
         }
 
-        self.backend.mark_submitted(reservation_id).await?;
         let pending = call
             .send()
             .await
             .map_err(|error| ExecutorError::Transaction(error.to_string()))?;
         let tx_hash = *pending;
+        self.backend
+            .mark_submitted(reservation_id, Some(format!("{tx_hash:?}")))
+            .await?;
         println!("submitted reservation {reservation_id}: tx={tx_hash:?}");
 
         let receipt = pending
@@ -281,18 +283,25 @@ impl BackendClient {
             .await
     }
 
-    async fn mark_submitted(&self, reservation_id: &str) -> Result<(), ExecutorError> {
-        self.post_reservation_action(&format!("/reservations/{reservation_id}/submitted"))
-            .await
+    async fn mark_submitted(
+        &self,
+        reservation_id: &str,
+        tx_hash: Option<String>,
+    ) -> Result<(), ExecutorError> {
+        self.post_reservation_action(
+            &format!("/reservations/{reservation_id}/submitted"),
+            tx_hash,
+        )
+        .await
     }
 
     async fn commit_reservation(&self, reservation_id: &str) -> Result<(), ExecutorError> {
-        self.post_reservation_action(&format!("/reservations/{reservation_id}/commit"))
+        self.post_reservation_action(&format!("/reservations/{reservation_id}/commit"), None)
             .await
     }
 
     async fn release_reservation(&self, reservation_id: &str) -> Result<(), ExecutorError> {
-        self.post_reservation_action(&format!("/reservations/{reservation_id}/release"))
+        self.post_reservation_action(&format!("/reservations/{reservation_id}/release"), None)
             .await
     }
 
@@ -309,8 +318,15 @@ impl BackendClient {
         decode_backend_response(response).await
     }
 
-    async fn post_reservation_action(&self, path: &str) -> Result<(), ExecutorError> {
-        let body = ReservationActionBody { now: unix_now()? };
+    async fn post_reservation_action(
+        &self,
+        path: &str,
+        tx_hash: Option<String>,
+    ) -> Result<(), ExecutorError> {
+        let body = ReservationActionBody {
+            now: unix_now()?,
+            tx_hash,
+        };
         let response = self
             .client
             .post(format!("{}{}", self.base_url, path))
@@ -326,6 +342,8 @@ impl BackendClient {
 #[derive(Debug, Serialize)]
 struct ReservationActionBody {
     now: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_hash: Option<String>,
 }
 
 async fn decode_backend_response<T: serde::de::DeserializeOwned>(

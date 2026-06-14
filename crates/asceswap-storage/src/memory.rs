@@ -25,12 +25,41 @@ impl InMemoryEngineStore {
 
 impl EngineStore for InMemoryEngineStore {
     fn put_order(&mut self, order: StoredOrder) -> Result<(), StorageError> {
-        self.orders.insert(order.hash(), order);
+        let hash = order.hash();
+        let next = match self.orders.get(&hash) {
+            Some(existing) => StoredOrder {
+                snapshot: order.snapshot.clone(),
+                created_at: existing.created_at,
+                updated_at: if existing.snapshot == order.snapshot {
+                    existing.updated_at
+                } else {
+                    order.updated_at
+                },
+            },
+            None => order,
+        };
+        self.orders.insert(hash, next);
         Ok(())
     }
 
     fn put_reservation(&mut self, reservation: StoredReservation) -> Result<(), StorageError> {
-        self.reservations.insert(reservation.id(), reservation);
+        let id = reservation.id();
+        let next = match self.reservations.get(&id) {
+            Some(existing) => StoredReservation {
+                reservation: reservation.reservation.clone(),
+                created_at: existing.created_at,
+                updated_at: if existing.reservation == reservation.reservation
+                    && existing.tx_hash == reservation.tx_hash
+                {
+                    existing.updated_at
+                } else {
+                    reservation.updated_at
+                },
+                tx_hash: reservation.tx_hash.or(existing.tx_hash),
+            },
+            None => reservation,
+        };
+        self.reservations.insert(id, next);
         Ok(())
     }
 
