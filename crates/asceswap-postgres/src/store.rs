@@ -1,5 +1,6 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::mpsc;
+use std::thread;
 
 use asceswap_engine::{EngineEvent, EngineSnapshot, OrderSnapshot};
 use asceswap_state::{Reservation, ReservationLeg};
@@ -124,55 +125,83 @@ LIMIT 1
 "#;
 
 pub struct PostgresEngineStore {
-    client: RefCell<Client>,
+    sender: mpsc::Sender<StoreCommand>,
 }
 
 impl PostgresEngineStore {
     pub fn connect(params: &str) -> Result<Self, StorageError> {
-        let client = Client::connect(params, NoTls).map_err(db_error)?;
-        Ok(Self::new(client))
+        let params = params.to_string();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
+
+        thread::spawn(move || {
+            let client = Client::connect(&params, NoTls).map_err(db_error);
+            match client {
+                Ok(client) => {
+                    let _ = ready_sender.send(Ok(()));
+                    run_store_worker(client, receiver);
+                }
+                Err(error) => {
+                    let _ = ready_sender.send(Err(error));
+                }
+            }
+        });
+
+        ready_receiver
+            .recv()
+            .map_err(|_| StorageError::backend("postgres worker failed during startup"))??;
+        Ok(Self { sender })
     }
 
     pub fn new(client: Client) -> Self {
-        Self {
-            client: RefCell::new(client),
-        }
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || run_store_worker(client, receiver));
+        Self { sender }
     }
 
     pub fn run_schema(&mut self) -> Result<(), StorageError> {
-        self.client
-            .get_mut()
-            .batch_execute(POSTGRES_SCHEMA)
-            .map_err(db_error)
+        self.request(StoreCommand::RunSchema)
+    }
+
+    fn request<T: Send + 'static>(
+        &self,
+        build: impl FnOnce(mpsc::Sender<Result<T, StorageError>>) -> StoreCommand,
+    ) -> Result<T, StorageError> {
+        let (respond_to, response) = mpsc::channel();
+        self.sender
+            .send(build(respond_to))
+            .map_err(|_| StorageError::backend("postgres worker stopped"))?;
+        response
+            .recv()
+            .map_err(|_| StorageError::backend("postgres worker stopped"))?
     }
 }
 
 impl EngineStore for PostgresEngineStore {
     fn put_order(&mut self, order: StoredOrder) -> Result<(), StorageError> {
-        let mut client = self.client.borrow_mut();
-        write_order(&mut *client, order)
+        self.request(|respond_to| StoreCommand::PutOrder { order, respond_to })
     }
 
     fn put_reservation(&mut self, reservation: StoredReservation) -> Result<(), StorageError> {
-        let mut client = self.client.borrow_mut();
-        let mut tx = client.transaction().map_err(db_error)?;
-        write_reservation(&mut tx, reservation)?;
-        tx.commit().map_err(db_error)
+        self.request(|respond_to| StoreCommand::PutReservation {
+            reservation,
+            respond_to,
+        })
     }
 
     fn append_fill(&mut self, fill: StoredFill) -> Result<(), StorageError> {
-        let mut client = self.client.borrow_mut();
-        write_fill(&mut *client, fill)
+        self.request(|respond_to| StoreCommand::AppendFill { fill, respond_to })
     }
 
     fn append_event(&mut self, event: StoredEngineEvent) -> Result<(), StorageError> {
-        let mut client = self.client.borrow_mut();
-        write_event(&mut *client, event)
+        self.request(|respond_to| StoreCommand::AppendEvent { event, respond_to })
     }
 
     fn save_snapshot(&mut self, snapshot: StoredSnapshot) -> Result<(), StorageError> {
-        let mut client = self.client.borrow_mut();
-        write_snapshot(&mut *client, snapshot)
+        self.request(|respond_to| StoreCommand::SaveSnapshot {
+            snapshot,
+            respond_to,
+        })
     }
 
     fn persist_engine_snapshot(
@@ -180,10 +209,11 @@ impl EngineStore for PostgresEngineStore {
         snapshot: EngineSnapshot,
         now: u64,
     ) -> Result<(), StorageError> {
-        let mut client = self.client.borrow_mut();
-        let mut tx = client.transaction().map_err(db_error)?;
-        write_engine_snapshot(&mut tx, snapshot, now)?;
-        tx.commit().map_err(db_error)
+        self.request(|respond_to| StoreCommand::PersistEngineSnapshot {
+            snapshot,
+            now,
+            respond_to,
+        })
     }
 
     fn append_engine_events(
@@ -193,12 +223,7 @@ impl EngineStore for PostgresEngineStore {
         events: &[EngineEvent],
     ) -> Result<(), StorageError> {
         let events = stored_events(first_sequence, now, events)?;
-        let mut client = self.client.borrow_mut();
-        let mut tx = client.transaction().map_err(db_error)?;
-        for event in events {
-            write_event(&mut tx, event)?;
-        }
-        tx.commit().map_err(db_error)
+        self.request(|respond_to| StoreCommand::AppendStoredEvents { events, respond_to })
     }
 
     fn persist_engine_update(
@@ -209,146 +234,313 @@ impl EngineStore for PostgresEngineStore {
         snapshot: EngineSnapshot,
     ) -> Result<(), StorageError> {
         let events = stored_events(first_sequence, now, events)?;
-        let mut client = self.client.borrow_mut();
-        let mut tx = client.transaction().map_err(db_error)?;
-        for event in events {
-            write_event(&mut tx, event)?;
-        }
-        write_engine_snapshot(&mut tx, snapshot, now)?;
-        tx.commit().map_err(db_error)
+        self.request(|respond_to| StoreCommand::PersistEngineUpdate {
+            events,
+            snapshot,
+            now,
+            respond_to,
+        })
     }
 
     fn load_orders(&self) -> Result<Vec<StoredOrder>, StorageError> {
-        let rows = self
-            .client
-            .borrow_mut()
-            .query(SELECT_ORDERS_SQL, &[])
-            .map_err(db_error)?;
-
-        rows.into_iter().map(order_from_row).collect()
+        self.request(StoreCommand::LoadOrders)
     }
 
     fn load_reservations(&self) -> Result<Vec<StoredReservation>, StorageError> {
-        let mut client = self.client.borrow_mut();
-        let reservation_rows = client
-            .query(SELECT_RESERVATIONS_SQL, &[])
-            .map_err(db_error)?;
-        let leg_rows = client
-            .query(SELECT_RESERVATION_LEGS_SQL, &[])
-            .map_err(db_error)?;
-        drop(client);
-
-        let mut legs_by_reservation = HashMap::<B256, Vec<ReservationLeg>>::new();
-        for row in leg_rows {
-            let reservation_id = b256_from_bytes("reservation_legs.reservation_id", row.get(0))?;
-            let order_hash = b256_from_bytes("reservation_legs.order_hash", row.get(1))?;
-            let role = reservation_leg_role_from_i16("reservation_legs.role", row.get(2))?;
-            let claim_amount = u256_from_string(
-                "reservation_legs.claim_amount",
-                row.get::<_, String>(3).as_str(),
-            )?;
-            legs_by_reservation
-                .entry(reservation_id)
-                .or_default()
-                .push(ReservationLeg {
-                    order_hash,
-                    role,
-                    claim_amount,
-                });
-        }
-
-        let mut reservations = Vec::with_capacity(reservation_rows.len());
-        for row in reservation_rows {
-            let id = b256_from_bytes("reservations.reservation_id", row.get(0))?;
-            let status = reservation_status_from_str(row.get::<_, String>(1).as_str())?;
-            let created_at = i64_to_u64("reservations.created_at", row.get(2))?;
-            let expires_at = row
-                .get::<_, Option<i64>>(3)
-                .map(|value| i64_to_u64("reservations.expires_at", value))
-                .transpose()?;
-            let updated_at = i64_to_u64("reservations.updated_at", row.get(4))?;
-            let legs = legs_by_reservation.remove(&id).unwrap_or_default();
-
-            reservations.push(StoredReservation {
-                reservation: Reservation {
-                    id,
-                    status,
-                    created_at,
-                    expires_at,
-                    legs,
-                },
-                created_at,
-                updated_at,
-            });
-        }
-
-        Ok(reservations)
+        self.request(StoreCommand::LoadReservations)
     }
 
     fn load_fills(&self) -> Result<Vec<StoredFill>, StorageError> {
-        let rows = self
-            .client
-            .borrow_mut()
-            .query(SELECT_FILLS_SQL, &[])
-            .map_err(db_error)?;
-
-        rows.into_iter().map(fill_from_row).collect()
+        self.request(StoreCommand::LoadFills)
     }
 
     fn load_events(&self) -> Result<Vec<StoredEngineEvent>, StorageError> {
-        let rows = self
-            .client
-            .borrow_mut()
-            .query(SELECT_EVENTS_SQL, &[])
-            .map_err(db_error)?;
-
-        rows.into_iter().map(event_from_row).collect()
+        self.request(StoreCommand::LoadEvents)
     }
 
     fn load_snapshot(&self) -> Result<Option<StoredSnapshot>, StorageError> {
-        let row = self
-            .client
-            .borrow_mut()
-            .query_opt(SELECT_LATEST_SNAPSHOT_SQL, &[])
-            .map_err(db_error)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let next_reservation_sequence =
-            i64_to_u64("engine_snapshots.next_reservation_sequence", row.get(0))?;
-        let created_at = i64_to_u64("engine_snapshots.created_at", row.get(1))?;
-        let orders = self
-            .load_orders()?
-            .into_iter()
-            .map(|stored| stored.snapshot)
-            .collect();
-        let reservations = self
-            .load_reservations()?
-            .into_iter()
-            .map(|stored| stored.reservation)
-            .collect();
-
-        Ok(Some(StoredSnapshot {
-            engine: EngineSnapshot {
-                orders,
-                reservations,
-                next_reservation_sequence,
-            },
-            created_at,
-        }))
+        self.request(StoreCommand::LoadSnapshot)
     }
 
     fn last_event_sequence(&self) -> Result<Option<u64>, StorageError> {
-        let row = self
-            .client
-            .borrow_mut()
-            .query_one("SELECT MAX(sequence) FROM engine_events", &[])
-            .map_err(db_error)?;
-        row.get::<_, Option<i64>>(0)
-            .map(|sequence| i64_to_u64("engine_events.sequence", sequence))
-            .transpose()
+        self.request(StoreCommand::LastEventSequence)
     }
+}
+
+enum StoreCommand {
+    RunSchema(mpsc::Sender<Result<(), StorageError>>),
+    PutOrder {
+        order: StoredOrder,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    PutReservation {
+        reservation: StoredReservation,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    AppendFill {
+        fill: StoredFill,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    AppendEvent {
+        event: StoredEngineEvent,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    SaveSnapshot {
+        snapshot: StoredSnapshot,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    PersistEngineSnapshot {
+        snapshot: EngineSnapshot,
+        now: u64,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    AppendStoredEvents {
+        events: Vec<StoredEngineEvent>,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    PersistEngineUpdate {
+        events: Vec<StoredEngineEvent>,
+        snapshot: EngineSnapshot,
+        now: u64,
+        respond_to: mpsc::Sender<Result<(), StorageError>>,
+    },
+    LoadOrders(mpsc::Sender<Result<Vec<StoredOrder>, StorageError>>),
+    LoadReservations(mpsc::Sender<Result<Vec<StoredReservation>, StorageError>>),
+    LoadFills(mpsc::Sender<Result<Vec<StoredFill>, StorageError>>),
+    LoadEvents(mpsc::Sender<Result<Vec<StoredEngineEvent>, StorageError>>),
+    LoadSnapshot(mpsc::Sender<Result<Option<StoredSnapshot>, StorageError>>),
+    LastEventSequence(mpsc::Sender<Result<Option<u64>, StorageError>>),
+}
+
+fn run_store_worker(mut client: Client, receiver: mpsc::Receiver<StoreCommand>) {
+    while let Ok(command) = receiver.recv() {
+        match command {
+            StoreCommand::RunSchema(respond_to) => {
+                let _ = respond_to.send(client.batch_execute(POSTGRES_SCHEMA).map_err(db_error));
+            }
+            StoreCommand::PutOrder { order, respond_to } => {
+                let _ = respond_to.send(write_order(&mut client, order));
+            }
+            StoreCommand::PutReservation {
+                reservation,
+                respond_to,
+            } => {
+                let _ = respond_to.send(write_reservation_transaction(&mut client, reservation));
+            }
+            StoreCommand::AppendFill { fill, respond_to } => {
+                let _ = respond_to.send(write_fill(&mut client, fill));
+            }
+            StoreCommand::AppendEvent { event, respond_to } => {
+                let _ = respond_to.send(write_event(&mut client, event));
+            }
+            StoreCommand::SaveSnapshot {
+                snapshot,
+                respond_to,
+            } => {
+                let _ = respond_to.send(write_snapshot(&mut client, snapshot));
+            }
+            StoreCommand::PersistEngineSnapshot {
+                snapshot,
+                now,
+                respond_to,
+            } => {
+                let _ = respond_to.send(write_engine_snapshot_transaction(
+                    &mut client,
+                    snapshot,
+                    now,
+                ));
+            }
+            StoreCommand::AppendStoredEvents { events, respond_to } => {
+                let _ = respond_to.send(write_events_transaction(&mut client, events));
+            }
+            StoreCommand::PersistEngineUpdate {
+                events,
+                snapshot,
+                now,
+                respond_to,
+            } => {
+                let _ = respond_to.send(write_engine_update_transaction(
+                    &mut client,
+                    events,
+                    snapshot,
+                    now,
+                ));
+            }
+            StoreCommand::LoadOrders(respond_to) => {
+                let _ = respond_to.send(load_orders_from_client(&mut client));
+            }
+            StoreCommand::LoadReservations(respond_to) => {
+                let _ = respond_to.send(load_reservations_from_client(&mut client));
+            }
+            StoreCommand::LoadFills(respond_to) => {
+                let _ = respond_to.send(load_fills_from_client(&mut client));
+            }
+            StoreCommand::LoadEvents(respond_to) => {
+                let _ = respond_to.send(load_events_from_client(&mut client));
+            }
+            StoreCommand::LoadSnapshot(respond_to) => {
+                let _ = respond_to.send(load_snapshot_from_client(&mut client));
+            }
+            StoreCommand::LastEventSequence(respond_to) => {
+                let _ = respond_to.send(last_event_sequence_from_client(&mut client));
+            }
+        }
+    }
+}
+
+fn write_reservation_transaction(
+    client: &mut Client,
+    reservation: StoredReservation,
+) -> Result<(), StorageError> {
+    let mut tx = client.transaction().map_err(db_error)?;
+    write_reservation(&mut tx, reservation)?;
+    tx.commit().map_err(db_error)
+}
+
+fn write_engine_snapshot_transaction(
+    client: &mut Client,
+    snapshot: EngineSnapshot,
+    now: u64,
+) -> Result<(), StorageError> {
+    let mut tx = client.transaction().map_err(db_error)?;
+    write_engine_snapshot(&mut tx, snapshot, now)?;
+    tx.commit().map_err(db_error)
+}
+
+fn write_events_transaction(
+    client: &mut Client,
+    events: Vec<StoredEngineEvent>,
+) -> Result<(), StorageError> {
+    let mut tx = client.transaction().map_err(db_error)?;
+    for event in events {
+        write_event(&mut tx, event)?;
+    }
+    tx.commit().map_err(db_error)
+}
+
+fn write_engine_update_transaction(
+    client: &mut Client,
+    events: Vec<StoredEngineEvent>,
+    snapshot: EngineSnapshot,
+    now: u64,
+) -> Result<(), StorageError> {
+    let mut tx = client.transaction().map_err(db_error)?;
+    for event in events {
+        write_event(&mut tx, event)?;
+    }
+    write_engine_snapshot(&mut tx, snapshot, now)?;
+    tx.commit().map_err(db_error)
+}
+
+fn load_orders_from_client(client: &mut Client) -> Result<Vec<StoredOrder>, StorageError> {
+    let rows = client.query(SELECT_ORDERS_SQL, &[]).map_err(db_error)?;
+    rows.into_iter().map(order_from_row).collect()
+}
+
+fn load_reservations_from_client(
+    client: &mut Client,
+) -> Result<Vec<StoredReservation>, StorageError> {
+    let reservation_rows = client
+        .query(SELECT_RESERVATIONS_SQL, &[])
+        .map_err(db_error)?;
+    let leg_rows = client
+        .query(SELECT_RESERVATION_LEGS_SQL, &[])
+        .map_err(db_error)?;
+
+    let mut legs_by_reservation = HashMap::<B256, Vec<ReservationLeg>>::new();
+    for row in leg_rows {
+        let reservation_id = b256_from_bytes("reservation_legs.reservation_id", row.get(0))?;
+        let order_hash = b256_from_bytes("reservation_legs.order_hash", row.get(1))?;
+        let role = reservation_leg_role_from_i16("reservation_legs.role", row.get(2))?;
+        let claim_amount = u256_from_string(
+            "reservation_legs.claim_amount",
+            row.get::<_, String>(3).as_str(),
+        )?;
+        legs_by_reservation
+            .entry(reservation_id)
+            .or_default()
+            .push(ReservationLeg {
+                order_hash,
+                role,
+                claim_amount,
+            });
+    }
+
+    let mut reservations = Vec::with_capacity(reservation_rows.len());
+    for row in reservation_rows {
+        let id = b256_from_bytes("reservations.reservation_id", row.get(0))?;
+        let status = reservation_status_from_str(row.get::<_, String>(1).as_str())?;
+        let created_at = i64_to_u64("reservations.created_at", row.get(2))?;
+        let expires_at = row
+            .get::<_, Option<i64>>(3)
+            .map(|value| i64_to_u64("reservations.expires_at", value))
+            .transpose()?;
+        let updated_at = i64_to_u64("reservations.updated_at", row.get(4))?;
+        let legs = legs_by_reservation.remove(&id).unwrap_or_default();
+
+        reservations.push(StoredReservation {
+            reservation: Reservation {
+                id,
+                status,
+                created_at,
+                expires_at,
+                legs,
+            },
+            created_at,
+            updated_at,
+        });
+    }
+
+    Ok(reservations)
+}
+
+fn load_fills_from_client(client: &mut Client) -> Result<Vec<StoredFill>, StorageError> {
+    let rows = client.query(SELECT_FILLS_SQL, &[]).map_err(db_error)?;
+    rows.into_iter().map(fill_from_row).collect()
+}
+
+fn load_events_from_client(client: &mut Client) -> Result<Vec<StoredEngineEvent>, StorageError> {
+    let rows = client.query(SELECT_EVENTS_SQL, &[]).map_err(db_error)?;
+    rows.into_iter().map(event_from_row).collect()
+}
+
+fn load_snapshot_from_client(client: &mut Client) -> Result<Option<StoredSnapshot>, StorageError> {
+    let row = client
+        .query_opt(SELECT_LATEST_SNAPSHOT_SQL, &[])
+        .map_err(db_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let next_reservation_sequence =
+        i64_to_u64("engine_snapshots.next_reservation_sequence", row.get(0))?;
+    let created_at = i64_to_u64("engine_snapshots.created_at", row.get(1))?;
+    let orders = load_orders_from_client(client)?
+        .into_iter()
+        .map(|stored| stored.snapshot)
+        .collect();
+    let reservations = load_reservations_from_client(client)?
+        .into_iter()
+        .map(|stored| stored.reservation)
+        .collect();
+
+    Ok(Some(StoredSnapshot {
+        engine: EngineSnapshot {
+            orders,
+            reservations,
+            next_reservation_sequence,
+        },
+        created_at,
+    }))
+}
+
+fn last_event_sequence_from_client(client: &mut Client) -> Result<Option<u64>, StorageError> {
+    let row = client
+        .query_one("SELECT MAX(sequence) FROM engine_events", &[])
+        .map_err(db_error)?;
+    row.get::<_, Option<i64>>(0)
+        .map(|sequence| i64_to_u64("engine_events.sequence", sequence))
+        .transpose()
 }
 
 fn write_engine_snapshot(
