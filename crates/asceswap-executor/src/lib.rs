@@ -126,7 +126,7 @@ impl ExecutorConfig {
             release_on_simulation_failure: parse_bool_env(
                 &get,
                 "ASCESWAP_EXECUTOR_RELEASE_ON_SIMULATION_FAILURE",
-                false,
+                true,
             )?,
         })
     }
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(config.reservation_limit, 20);
         assert_eq!(config.confirmations, 1);
         assert!(!config.dry_run);
-        assert!(!config.release_on_simulation_failure);
+        assert!(config.release_on_simulation_failure);
     }
 
     #[test]

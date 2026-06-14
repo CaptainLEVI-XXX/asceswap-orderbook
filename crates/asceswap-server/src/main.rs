@@ -11,6 +11,7 @@ use asceswap_validation::SignatureDomain;
 const MARKET_ACTOR_INBOX_CAPACITY: usize = 1_024;
 const DEFAULT_CHAIN_ID: u64 = 421_614;
 const DEFAULT_EXCHANGE_ADDRESS: &str = "0x346457c948EaA86Afa9392B9E790bE2E42c6ebD6";
+const DEFAULT_DEMO_MM_RESERVATION_TTL_SECS: u64 = 300;
 
 #[tokio::main]
 async fn main() {
@@ -47,9 +48,10 @@ async fn run_from_env() -> Result<(), String> {
         let demo_market_maker = DemoMarketMaker::new(
             private_key,
             signature_domain,
-            env_u256_default("ASCESWAP_DEMO_MM_EPOCH", U256::from(1))?,
+            env_u256_default("ASCESWAP_DEMO_MM_EPOCH", U256::ZERO)?,
             env_u16_default("ASCESWAP_DEMO_MM_MAX_FEE_RATE_BPS", 100)?,
-            env_optional_u64("ASCESWAP_DEMO_MM_RESERVATION_TTL_SECS")?.or(Some(30)),
+            env_optional_u64("ASCESWAP_DEMO_MM_RESERVATION_TTL_SECS")?
+                .or(Some(DEFAULT_DEMO_MM_RESERVATION_TTL_SECS)),
             env_bool("ASCESWAP_DEMO_MM_AUTO_COMMIT", false)?,
         )
         .map_err(|error| format!("{error:?}"))?;
