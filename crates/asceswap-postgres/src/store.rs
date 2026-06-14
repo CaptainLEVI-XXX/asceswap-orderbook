@@ -29,8 +29,8 @@ INSERT INTO orders (
     side, expiration, epoch, max_fee_rate_bps, signature_bytes, order_state,
     filled_claim_amount, resting, accepted_sequence, created_at, updated_at
 ) VALUES (
-    $1, $2::numeric, $3, $4, $5, $6::numeric, $7::numeric,
-    $8, $9::numeric, $10::numeric, $11, $12, $13, $14::numeric, $15, $16, $17, $18
+    $1, $2::text::numeric, $3, $4, $5, $6::text::numeric, $7::text::numeric,
+    $8, $9::text::numeric, $10::text::numeric, $11, $12, $13, $14::text::numeric, $15, $16, $17, $18
 )
 ON CONFLICT (order_hash) DO UPDATE SET
     salt = EXCLUDED.salt,
@@ -64,13 +64,13 @@ ON CONFLICT (reservation_id) DO UPDATE SET
 
 const INSERT_RESERVATION_LEG_SQL: &str = r#"
 INSERT INTO reservation_legs (reservation_id, leg_index, order_hash, role, claim_amount)
-VALUES ($1, $2, $3, $4, $5::numeric)
+VALUES ($1, $2, $3, $4, $5::text::numeric)
 "#;
 
 const INSERT_FILL_SQL: &str = r#"
 INSERT INTO fills (
     sequence, reservation_id, order_hash, claim_amount, new_filled_claim_amount, created_at
-) VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6)
+) VALUES ($1, $2, $3, $4::text::numeric, $5::text::numeric, $6)
 ON CONFLICT (sequence) DO NOTHING
 "#;
 
