@@ -292,6 +292,7 @@ dependencies = [
  "asceswap-market-actor",
  "asceswap-matcher",
  "asceswap-math",
+ "asceswap-orderbook",
  "asceswap-state",
  "asceswap-storage",
  "asceswap-types",
