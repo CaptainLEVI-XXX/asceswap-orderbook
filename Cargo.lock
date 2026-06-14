@@ -318,6 +318,7 @@ dependencies = [
 name = "asceswap-executor"
 version = "0.1.0"
 dependencies = [
+ "asceswap-adapter-keeper",
  "asceswap-api",
  "ethers",
  "reqwest 0.12.28",

@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+asceswap-adapter-keeper.workspace = true
 asceswap-api.workspace = true
 ethers.workspace = true
 reqwest.workspace = true
