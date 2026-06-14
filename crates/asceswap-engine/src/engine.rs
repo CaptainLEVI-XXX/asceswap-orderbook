@@ -213,7 +213,11 @@ impl AsceSwapEngine {
             remaining_claim_amount: validated.remaining_claim_amount,
         });
 
-        let plan = self.plan_for_submit(&command.order, validated.filled_claim_amount)?;
+        let plan = self.plan_for_submit(
+            &command.order,
+            validated.filled_claim_amount,
+            command.validation.now,
+        )?;
 
         if command.post_only && plan.is_some() {
             lifecycle.transition_to(OrderState::Inactive)?;
@@ -668,8 +672,10 @@ impl AsceSwapEngine {
         &mut self,
         order: &Order,
         filled_claim_amount: U256,
+        now: u64,
     ) -> Result<Option<MatchPlan>, EngineError> {
         let unavailable_maker_hashes = self.unavailable_maker_hashes();
+        let now = U256::from(now);
         let book = self
             .books
             .entry(order.market_id)
@@ -679,7 +685,10 @@ impl AsceSwapEngine {
             order,
             filled_claim_amount,
             self.match_config,
-            |maker| !unavailable_maker_hashes.contains(&maker.hash),
+            |maker| {
+                !unavailable_maker_hashes.contains(&maker.hash)
+                    && (maker.order.expiration == U256::ZERO || maker.order.expiration >= now)
+            },
         )?)
     }
 

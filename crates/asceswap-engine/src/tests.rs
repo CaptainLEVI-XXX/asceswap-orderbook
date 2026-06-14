@@ -197,6 +197,38 @@ fn reserved_maker_is_skipped_for_next_taker() {
 }
 
 #[test]
+fn expired_maker_is_skipped_for_next_taker() {
+    let mut engine = AsceSwapEngine::default();
+    let mut expired_maker = sell_order(1, 1, 100, 40);
+    expired_maker.expiration = U256::from(100);
+    let mut live_maker = sell_order(2, 2, 100, 45);
+    live_maker.expiration = U256::from(200);
+    let expired_maker_hash = order_hash(&expired_maker);
+    let live_maker_hash = order_hash(&live_maker);
+    engine.submit_order(submit(expired_maker, 90)).unwrap();
+    engine.submit_order(submit(live_maker, 91)).unwrap();
+
+    let taker = buy_order(3, 3, 100, 50);
+    let response = engine.submit_order(submit(taker, 101)).unwrap();
+
+    match response.outcome {
+        SubmitOrderOutcome::Matched { plan, .. } => {
+            assert_eq!(plan.maker_fills.len(), 1);
+            assert_eq!(plan.maker_fills[0].order_hash, live_maker_hash);
+        }
+        other => panic!("expected live maker match, got {other:?}"),
+    }
+    assert_eq!(
+        engine.order_record(expired_maker_hash).unwrap().state(),
+        OrderState::Open
+    );
+    assert_eq!(
+        engine.order_record(live_maker_hash).unwrap().state(),
+        OrderState::Reserved
+    );
+}
+
+#[test]
 fn matched_order_exposes_contract_settlement_payload() {
     let mut engine = AsceSwapEngine::default();
     let maker_order = sell_order(1, 1, 100, 40);
