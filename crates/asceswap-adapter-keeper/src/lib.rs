@@ -1,7 +1,7 @@
 use std::env;
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ethers::contract::abigen;
 use ethers::middleware::SignerMiddleware;
@@ -26,11 +26,14 @@ type KeeperClient = SignerMiddleware<Provider<Http>, LocalWallet>;
 
 const DEFAULT_RPC_URL: &str = "https://sepolia-rollup.arbitrum.io/rpc";
 const DEFAULT_CHAIN_ID: u64 = 421_614;
+const DEFAULT_INTERVAL_SECS: u64 = 900;
+#[cfg(test)]
+const DEFAULT_MARKET_END_TIMESTAMP: u64 = 1_783_937_978;
 const DEFAULT_TARGETS: &str = concat!(
     "aave-usdc-borrow=0x3B9D6fF6d0C798317f3B51681e335f5b07cbD70F:",
-    "0x2f56d7c26e665a04dd24404cdd841d6fcd7fd402a3b127760e2598c64d2df369;",
+    "0x2f56d7c26e665a04dd24404cdd841d6fcd7fd402a3b127760e2598c64d2df369:1783937978;",
     "arbitrum-gas=0x81aA57736801E33f8ef059F79B8F4332416D4DB8:",
-    "0xfe77931a0aa6baee55370819b38cb10feb3f03e2c0053a9a37e3213a471b7f28"
+    "0xfe77931a0aa6baee55370819b38cb10feb3f03e2c0053a9a37e3213a471b7f28:1783937978"
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,7 +77,7 @@ impl KeeperConfig {
             interval: Duration::from_secs(parse_u64_env(
                 &get,
                 "ASCESWAP_KEEPER_INTERVAL_SECS",
-                300,
+                DEFAULT_INTERVAL_SECS,
             )?),
             retry_interval: Duration::from_secs(parse_u64_env(
                 &get,
@@ -92,6 +95,7 @@ pub struct KeeperTarget {
     pub label: Option<String>,
     pub adapter: Address,
     pub market_id: H256,
+    pub end_timestamp: Option<u64>,
 }
 
 impl KeeperTarget {
@@ -107,6 +111,7 @@ pub struct KeeperCycleReport {
     pub attempted: usize,
     pub succeeded: usize,
     pub failed: usize,
+    pub skipped_expired: usize,
 }
 
 pub async fn run_from_env() -> Result<(), KeeperError> {
@@ -145,10 +150,11 @@ impl AdapterKeeper {
             };
 
             println!(
-                "adapter keeper cycle complete: attempted={} succeeded={} failed={} next_tick_secs={}",
+                "adapter keeper cycle complete: attempted={} succeeded={} failed={} skipped_expired={} next_tick_secs={}",
                 report.attempted,
                 report.succeeded,
                 report.failed,
+                report.skipped_expired,
                 delay.as_secs()
             );
             tokio::time::sleep(delay).await;
@@ -157,8 +163,19 @@ impl AdapterKeeper {
 
     pub async fn run_once(&self) -> Result<KeeperCycleReport, KeeperError> {
         let mut report = KeeperCycleReport::default();
+        let now = unix_timestamp()?;
 
         for target in &self.config.targets {
+            if target_expired(target, now) {
+                report.skipped_expired += 1;
+                println!(
+                    "adapter poke skipped after market end: target={} end_timestamp={}",
+                    target.display_name(),
+                    target.end_timestamp.unwrap_or_default()
+                );
+                continue;
+            }
+
             report.attempted += 1;
             match self.poke_target(target).await {
                 Ok(()) => report.succeeded += 1,
@@ -241,16 +258,22 @@ pub fn parse_targets(value: &str) -> Result<Vec<KeeperTarget>, KeeperError> {
             }
             None => (None, raw_entry),
         };
-        let (adapter, market_id) = target.split_once(':').ok_or_else(|| {
-            KeeperError::Config(
-                "keeper targets must use label=adapter:marketId or adapter:marketId".to_string(),
-            )
-        })?;
+        let mut parts = target.split(':');
+        let adapter = parts.next().ok_or_else(invalid_target_format)?;
+        let market_id = parts.next().ok_or_else(invalid_target_format)?;
+        let end_timestamp = parts
+            .next()
+            .map(|value| parse_u64_value(value.trim(), "keeper target endTimestamp"))
+            .transpose()?;
+        if parts.next().is_some() {
+            return Err(invalid_target_format());
+        }
 
         targets.push(KeeperTarget {
             label,
             adapter: parse_address(adapter.trim(), "keeper target adapter")?,
             market_id: parse_h256(market_id.trim(), "keeper target marketId")?,
+            end_timestamp,
         });
     }
 
@@ -261,6 +284,13 @@ pub fn parse_targets(value: &str) -> Result<Vec<KeeperTarget>, KeeperError> {
     }
 
     Ok(targets)
+}
+
+fn invalid_target_format() -> KeeperError {
+    KeeperError::Config(
+        "keeper targets must use label=adapter:marketId[:endTimestamp] or adapter:marketId[:endTimestamp]"
+            .to_string(),
+    )
 }
 
 fn parse_address(value: &str, field: &'static str) -> Result<Address, KeeperError> {
@@ -309,6 +339,15 @@ fn parse_u64_env(
     }
 }
 
+fn parse_u64_value(value: &str, name: &'static str) -> Result<u64, KeeperError> {
+    if value.is_empty() {
+        return Err(KeeperError::Config(format!("{name} cannot be empty")));
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| KeeperError::Config(format!("{name} must be a u64")))
+}
+
 fn parse_usize_env(
     get: &impl Fn(&str) -> Option<String>,
     name: &'static str,
@@ -345,6 +384,20 @@ fn parse_bool_env(
 
 fn receipt_succeeded(receipt: &TransactionReceipt) -> bool {
     receipt.status == Some(1_u64.into())
+}
+
+fn unix_timestamp() -> Result<u64, KeeperError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| KeeperError::Config(format!("system clock before unix epoch: {error}")))
+}
+
+fn target_expired(target: &KeeperTarget, now: u64) -> bool {
+    target
+        .end_timestamp
+        .map(|end_timestamp| now >= end_timestamp)
+        .unwrap_or(false)
 }
 
 #[derive(Debug)]
@@ -391,11 +444,19 @@ mod tests {
         let config = KeeperConfig::from_getter(config_getter).unwrap();
 
         assert_eq!(config.chain_id, 421_614);
-        assert_eq!(config.interval, Duration::from_secs(300));
+        assert_eq!(config.interval, Duration::from_secs(DEFAULT_INTERVAL_SECS));
         assert_eq!(config.retry_interval, Duration::from_secs(60));
         assert_eq!(config.confirmations, 1);
         assert!(!config.dry_run);
         assert_eq!(config.targets.len(), 2);
+        assert_eq!(
+            config.targets[0].end_timestamp,
+            Some(DEFAULT_MARKET_END_TIMESTAMP)
+        );
+        assert_eq!(
+            config.targets[1].end_timestamp,
+            Some(DEFAULT_MARKET_END_TIMESTAMP)
+        );
         assert_eq!(config.rpc_url, DEFAULT_RPC_URL);
     }
 
@@ -431,7 +492,7 @@ mod tests {
     #[test]
     fn parses_labelled_and_unlabelled_targets() {
         let targets = parse_targets(&format!(
-            "aave={AAVE_ADAPTER}:{AAVE_MARKET_ID}, {GAS_ADAPTER}:{GAS_MARKET_ID}"
+            "aave={AAVE_ADAPTER}:{AAVE_MARKET_ID}:{DEFAULT_MARKET_END_TIMESTAMP}, {GAS_ADAPTER}:{GAS_MARKET_ID}"
         ))
         .unwrap();
 
@@ -442,9 +503,11 @@ mod tests {
             targets[0].market_id,
             AAVE_MARKET_ID.parse::<H256>().unwrap()
         );
+        assert_eq!(targets[0].end_timestamp, Some(DEFAULT_MARKET_END_TIMESTAMP));
         assert_eq!(targets[1].label, None);
         assert_eq!(targets[1].adapter, GAS_ADAPTER.parse::<Address>().unwrap());
         assert_eq!(targets[1].market_id, GAS_MARKET_ID.parse::<H256>().unwrap());
+        assert_eq!(targets[1].end_timestamp, None);
     }
 
     #[test]
@@ -452,5 +515,18 @@ mod tests {
         let error = parse_targets(" , ; \n ").unwrap_err();
 
         assert!(error.to_string().contains("at least one target"));
+    }
+
+    #[test]
+    fn detects_expired_targets() {
+        let target = parse_targets(&format!(
+            "{AAVE_ADAPTER}:{AAVE_MARKET_ID}:{DEFAULT_MARKET_END_TIMESTAMP}"
+        ))
+        .unwrap()
+        .remove(0);
+
+        assert!(!target_expired(&target, DEFAULT_MARKET_END_TIMESTAMP - 1));
+        assert!(target_expired(&target, DEFAULT_MARKET_END_TIMESTAMP));
+        assert!(target_expired(&target, DEFAULT_MARKET_END_TIMESTAMP + 1));
     }
 }
