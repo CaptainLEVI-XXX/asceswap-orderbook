@@ -12,7 +12,9 @@ asceswap-state.workspace = true
 asceswap-storage.workspace = true
 asceswap-types.workspace = true
 asceswap-validation.workspace = true
+native-tls.workspace = true
 postgres.workspace = true
+postgres-native-tls.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

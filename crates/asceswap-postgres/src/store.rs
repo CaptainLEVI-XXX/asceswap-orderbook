@@ -9,7 +9,9 @@ use asceswap_storage::{
     StoredSnapshot,
 };
 use asceswap_types::{Order, B256};
-use postgres::{Client, GenericClient, NoTls, Row};
+use native_tls::TlsConnector;
+use postgres::{Client, GenericClient, Row};
+use postgres_native_tls::MakeTlsConnector;
 
 use crate::codec::{
     address_from_bytes, address_to_bytes, b256_from_bytes, b256_to_bytes, claim_side_from_i16,
@@ -135,7 +137,7 @@ impl PostgresEngineStore {
         let (sender, receiver) = mpsc::channel();
 
         thread::spawn(move || {
-            let client = Client::connect(&params, NoTls).map_err(db_error);
+            let client = connect_client(&params);
             match client {
                 Ok(client) => {
                     let _ = ready_sender.send(Ok(()));
@@ -543,6 +545,14 @@ fn last_event_sequence_from_client(client: &mut Client) -> Result<Option<u64>, S
         .transpose()
 }
 
+fn connect_client(params: &str) -> Result<Client, StorageError> {
+    let tls = TlsConnector::builder()
+        .build()
+        .map_err(|error| StorageError::backend(format!("postgres TLS setup failed: {error}")))?;
+    let tls = MakeTlsConnector::new(tls);
+    Client::connect(params, tls).map_err(db_error)
+}
+
 fn write_engine_snapshot(
     client: &mut impl GenericClient,
     snapshot: EngineSnapshot,
@@ -838,5 +848,16 @@ fn event_from_row(row: Row) -> Result<StoredEngineEvent, StorageError> {
 }
 
 fn db_error(error: postgres::Error) -> StorageError {
-    StorageError::backend(error)
+    StorageError::backend(error_with_sources(&error))
+}
+
+fn error_with_sources(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(inner) = source {
+        message.push_str(": ");
+        message.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    message
 }
