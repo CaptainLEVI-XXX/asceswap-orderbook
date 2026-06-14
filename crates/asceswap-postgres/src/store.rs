@@ -843,8 +843,7 @@ fn write_snapshot(
         "source": "normalized_tables",
         "order_count": snapshot.engine.orders.len(),
         "reservation_count": snapshot.engine.reservations.len(),
-    })
-    .to_string();
+    });
 
     client
         .execute(

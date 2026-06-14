@@ -204,7 +204,7 @@ fn unique_schema_name() -> String {
 
 fn assert_event_round_trip(event: EngineEvent) {
     let encoded = encode_event(&event);
-    let decoded = decode_event(encoded.kind, &encoded.payload).unwrap();
+    let decoded = decode_event(encoded.kind, &encoded.payload.to_string()).unwrap();
     assert_eq!(decoded, event);
 }
 

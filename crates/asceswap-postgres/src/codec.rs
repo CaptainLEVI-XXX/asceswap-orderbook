@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 pub(crate) struct EncodedEvent {
     pub kind: &'static str,
-    pub payload: String,
+    pub payload: Value,
 }
 
 pub(crate) fn encode_event(event: &EngineEvent) -> EncodedEvent {
@@ -125,10 +125,7 @@ pub(crate) fn encode_event(event: &EngineEvent) -> EncodedEvent {
         ),
     };
 
-    EncodedEvent {
-        kind,
-        payload: payload.to_string(),
-    }
+    EncodedEvent { kind, payload }
 }
 
 pub(crate) fn decode_event(kind: &str, payload: &str) -> Result<EngineEvent, StorageError> {
