@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use asceswap_engine::{EngineEvent, EngineSnapshot, OrderSnapshot};
@@ -9,9 +9,9 @@ use asceswap_storage::{
     StoredSnapshot,
 };
 use asceswap_types::{Order, B256};
-use native_tls::TlsConnector;
 use postgres::{Client, GenericClient, Row};
-use postgres_native_tls::MakeTlsConnector;
+use postgres_rustls::{set_postgresql_alpn, MakeTlsConnector};
+use tokio_rustls::rustls::{crypto::ring, ClientConfig, RootCertStore};
 
 use crate::codec::{
     address_from_bytes, address_to_bytes, b256_from_bytes, b256_to_bytes, claim_side_from_i16,
@@ -546,9 +546,15 @@ fn last_event_sequence_from_client(client: &mut Client) -> Result<Option<u64>, S
 }
 
 fn connect_client(params: &str) -> Result<Client, StorageError> {
-    let tls = TlsConnector::builder()
-        .build()
-        .map_err(|error| StorageError::backend(format!("postgres TLS setup failed: {error}")))?;
+    let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut tls_config = ClientConfig::builder_with_provider(ring::default_provider().into())
+        .with_safe_default_protocol_versions()
+        .map_err(|error| StorageError::backend(format!("postgres TLS setup failed: {error}")))?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    set_postgresql_alpn(&mut tls_config);
+
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
     let tls = MakeTlsConnector::new(tls);
     Client::connect(params, tls).map_err(db_error)
 }

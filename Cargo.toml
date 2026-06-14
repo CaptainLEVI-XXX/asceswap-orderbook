@@ -40,11 +40,12 @@ asceswap-storage = { path = "crates/asceswap-storage" }
 asceswap-types = { path = "crates/asceswap-types" }
 asceswap-validation = { path = "crates/asceswap-validation" }
 ethers = { version = "2", default-features = false, features = ["abigen", "rustls"] }
-native-tls = "0.2"
 postgres = "0.19"
-postgres-native-tls = "0.5"
+postgres_rustls = "=0.1.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tower = { version = "0.5", features = ["util"] }
+webpki-roots = "1"
