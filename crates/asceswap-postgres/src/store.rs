@@ -141,7 +141,7 @@ impl PostgresEngineStore {
             match client {
                 Ok(client) => {
                     let _ = ready_sender.send(Ok(()));
-                    run_store_worker(client, receiver);
+                    run_store_worker(client, receiver, Some(params));
                 }
                 Err(error) => {
                     let _ = ready_sender.send(Err(error));
@@ -157,7 +157,7 @@ impl PostgresEngineStore {
 
     pub fn new(client: Client) -> Self {
         let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || run_store_worker(client, receiver));
+        thread::spawn(move || run_store_worker(client, receiver, None));
         Self { sender }
     }
 
@@ -314,46 +314,63 @@ enum StoreCommand {
     LastEventSequence(mpsc::Sender<Result<Option<u64>, StorageError>>),
 }
 
-fn run_store_worker(mut client: Client, receiver: mpsc::Receiver<StoreCommand>) {
+fn run_store_worker(
+    mut client: Client,
+    receiver: mpsc::Receiver<StoreCommand>,
+    reconnect_params: Option<String>,
+) {
     while let Ok(command) = receiver.recv() {
+        let reconnect_params = reconnect_params.as_deref();
         match command {
             StoreCommand::RunSchema(respond_to) => {
-                let _ = respond_to.send(client.batch_execute(POSTGRES_SCHEMA).map_err(db_error));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    client.batch_execute(POSTGRES_SCHEMA).map_err(db_error)
+                });
             }
             StoreCommand::PutOrder { order, respond_to } => {
-                let _ = respond_to.send(write_order(&mut client, order));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_order(client, order.clone())
+                });
             }
             StoreCommand::PutReservation {
                 reservation,
                 respond_to,
             } => {
-                let _ = respond_to.send(write_reservation_transaction(&mut client, reservation));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_reservation_transaction(client, reservation.clone())
+                });
             }
             StoreCommand::AppendFill { fill, respond_to } => {
-                let _ = respond_to.send(write_fill(&mut client, fill));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_fill(client, fill.clone())
+                });
             }
             StoreCommand::AppendEvent { event, respond_to } => {
-                let _ = respond_to.send(write_event(&mut client, event));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_event(client, event.clone())
+                });
             }
             StoreCommand::SaveSnapshot {
                 snapshot,
                 respond_to,
             } => {
-                let _ = respond_to.send(write_snapshot(&mut client, snapshot));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_snapshot(client, snapshot.clone())
+                });
             }
             StoreCommand::PersistEngineSnapshot {
                 snapshot,
                 now,
                 respond_to,
             } => {
-                let _ = respond_to.send(write_engine_snapshot_transaction(
-                    &mut client,
-                    snapshot,
-                    now,
-                ));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_engine_snapshot_transaction(client, snapshot.clone(), now)
+                });
             }
             StoreCommand::AppendStoredEvents { events, respond_to } => {
-                let _ = respond_to.send(write_events_transaction(&mut client, events));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_events_transaction(client, events.clone())
+                });
             }
             StoreCommand::PersistEngineUpdate {
                 events,
@@ -361,33 +378,86 @@ fn run_store_worker(mut client: Client, receiver: mpsc::Receiver<StoreCommand>) 
                 now,
                 respond_to,
             } => {
-                let _ = respond_to.send(write_engine_update_transaction(
-                    &mut client,
-                    events,
-                    snapshot,
-                    now,
-                ));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    write_engine_update_transaction(client, events.clone(), snapshot.clone(), now)
+                });
             }
             StoreCommand::LoadOrders(respond_to) => {
-                let _ = respond_to.send(load_orders_from_client(&mut client));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    load_orders_from_client(client)
+                });
             }
             StoreCommand::LoadReservations(respond_to) => {
-                let _ = respond_to.send(load_reservations_from_client(&mut client));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    load_reservations_from_client(client)
+                });
             }
             StoreCommand::LoadFills(respond_to) => {
-                let _ = respond_to.send(load_fills_from_client(&mut client));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    load_fills_from_client(client)
+                });
             }
             StoreCommand::LoadEvents(respond_to) => {
-                let _ = respond_to.send(load_events_from_client(&mut client));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    load_events_from_client(client)
+                });
             }
             StoreCommand::LoadSnapshot(respond_to) => {
-                let _ = respond_to.send(load_snapshot_from_client(&mut client));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    load_snapshot_from_client(client)
+                });
             }
             StoreCommand::LastEventSequence(respond_to) => {
-                let _ = respond_to.send(last_event_sequence_from_client(&mut client));
+                send_with_retry(&mut client, reconnect_params, &respond_to, |client| {
+                    last_event_sequence_from_client(client)
+                });
             }
         }
     }
+}
+
+fn send_with_retry<T: Send + 'static>(
+    client: &mut Client,
+    reconnect_params: Option<&str>,
+    respond_to: &mpsc::Sender<Result<T, StorageError>>,
+    mut operation: impl FnMut(&mut Client) -> Result<T, StorageError>,
+) {
+    let result = operation_with_reconnect(client, reconnect_params, &mut operation);
+    let _ = respond_to.send(result);
+}
+
+fn operation_with_reconnect<T>(
+    client: &mut Client,
+    reconnect_params: Option<&str>,
+    operation: &mut impl FnMut(&mut Client) -> Result<T, StorageError>,
+) -> Result<T, StorageError> {
+    if client.is_closed() {
+        if let Some(params) = reconnect_params {
+            *client = connect_client(params)?;
+        }
+    }
+
+    let result = operation(client);
+    if !matches!(
+        result,
+        Err(StorageError::Backend(ref message)) if is_closed_connection_error(message)
+    ) {
+        return result;
+    }
+
+    let Some(params) = reconnect_params else {
+        return result;
+    };
+    *client = connect_client(params)?;
+    operation(client)
+}
+
+fn is_closed_connection_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("connection closed")
+        || message.contains("connection reset")
+        || message.contains("broken pipe")
+        || message.contains("connection refused")
 }
 
 fn write_reservation_transaction(
